@@ -278,7 +278,7 @@ def _check_roundup(card, event):
     if card["source_type"] in ("company_notice", "regulator") or card["relation"] not in ("same_occurrence", "follow_up"):
         return
     target = (event.get("company") or {}).get("name")
-    if not target or sum(card[k].count(target) for k in ("title", "text")) > config.ROUNDUP_MAX_TARGET_MENTIONS:
+    if not target or target in card["title"] or card["text"].count(target) > config.ROUNDUP_MAX_TARGET_MENTIONS:
         return
     names = (item["name"].strip() for item in card["companies"])
     others = list(dict.fromkeys(name for name in names if target not in name and name not in target))

@@ -1,6 +1,6 @@
 import pytest
 
-from app import cards, pipeline, rules, views
+from app import cards, pipeline, rules, stage, views
 from .fakes import COMPANY, NOW, FakeLLM, doc, event, judge, news, record
 from .test_review_views import render
 
@@ -206,8 +206,8 @@ def company_read(names):
 ])
 def test_roundup_thresholds_and_verified_distinct_names(count, mentions, kind, relation, exclude):
     names = [*OTHERS[:count], OTHERS[0], COMPANY[:2]]
-    text = "。".join(n + "发布公告" for n in names) + COMPANY * (mentions - 1)
-    c = cards.build_card(doc(title=COMPANY, kind=kind, text=text), company_read([*names, "无原文公司"]),
+    text = "。".join(n + "发布公告" for n in names) + COMPANY * mentions
+    c = cards.build_card(doc(title="多家公司公告汇总", kind=kind, text=text), company_read([*names, "无原文公司"]),
                          judge(quote=text, relation=relation), event())
     if exclude:
         listed = "、".join(OTHERS[:3]) + ("等" if count > 3 else "")
@@ -241,3 +241,148 @@ def test_related_label_and_internal_relation(relation):
     text = render(v)["timeline"]["full"]
     assert "和这件事的关系：相关。公告说明了金额" in text
     assert "同一次发生" not in text and "后续进展" not in text
+
+
+@pytest.mark.parametrize("word", ["未获通过", "未通过", "未获得通过", "被否决", "否决"])
+@pytest.mark.parametrize("where", ["title", "text"])
+def test_rejected_shareholder_resolution_stops_stage_detection(word, where):
+    title = "股东大会决议公告"
+    body = BOARD + "。" + PENDING
+    if where == "title":
+        title += "（议案" + word + "）"
+    else:
+        body += "。表决结果：" + word
+    assert stage.detect(title, BOARD, body) is None
+
+
+@pytest.mark.parametrize("title,quote", [
+    *(("关于提议的" + word + "公告", "公司收到提议") for word in ("进展", "结果", "完成", "实施", "终止", "取消")),
+    *(("关于相关提议的公告", "该事项" + word) for word in ("已完成", "实施完毕", "已实施")),
+    ("事项进展公告", "此前收到提议",),
+])
+def test_proposal_progress_falls_through(title, quote):
+    assert stage.detect(title, quote, quote) is None
+    assert stage.detect(title, quote, quote + "。" + PENDING)["code"] == "pending"
+
+
+@pytest.mark.parametrize("text", [
+    *(f"本次回购{word}经董事会审议通过" for word in ("须", "需", "应当", "应")),
+    *("经董事会审议通过" + word + "实施" for word in ("后方可", "方可", "为前提", "后生效", "后实施")),
+    "本次回购须经董事会审议通过后方可实施", "在股东大会审议通过的前提下实施",
+    "董事会召开会议，该事项应经审议通过", "经董事会审议通过" + "甲" * 10 + "方可实施",
+])
+def test_conditional_approval_is_not_evidence(text):
+    assert stage.detect("说明", text, text) is None
+    assert stage.detect("收到提议", text, text)["code"] == "proposal"
+
+
+@pytest.mark.parametrize("text,code", [
+    ("经董事会审议通过，无需提交股东大会审议", "board"),
+    ("本方案已经股东大会审议通过", "shareholders"),
+    (BOARD + "。" + PENDING, "board_pending"),
+    ("公司需另行披露进展，本次方案经董事会审议通过", "board"),
+    ("经董事会审议通过，后方可实施的条件另行列示", "board"),
+])
+def test_unconditional_approval_survives_nearby_conditions(text, code):
+    assert stage.detect("公告", text, text)["code"] == code
+
+
+@pytest.mark.parametrize("word", ["终止", "取消", "撤回", "撤销", "不再"])
+def test_terminated_motion_is_not_approval_evidence(word):
+    board = f"董事会审议通过了《关于{word}实施本次股份回购的议案》"
+    share = f"本事项{word}实施，股东大会审议通过相关议案"
+    assert stage.detect("公告", board, board) is None
+    assert stage.detect("公告", share, share) is None
+    assert stage.detect("公告", None, board + "。" + PENDING)["code"] == "pending"
+    valid = "董事会审议通过了本次合并方案"
+    assert stage.detect("公告", board + "。" + valid, board + "。" + valid)["quotes"] == [valid]
+
+
+def test_terminated_shareholder_title_is_not_approval_evidence():
+    title = "关于撤回方案的股东会决议公告"
+    assert stage.detect(title, None, "") is None
+
+
+def test_short_quote_keeps_termination_context_of_original_sentence():
+    quote = "董事会审议通过了相关议案"
+    assert stage.detect("公告", quote, quote + "，决定终止本次回购。") is None
+
+
+@pytest.mark.parametrize("title,quote,where,expected", [
+    ("正在筹划重大事项", "公司正在筹划", "title", "正在筹划重大事项"),
+    ("事项公告", "公司正在筹划", "quote", "公司正在筹划"),
+    ("事项公告", "正在筹划，须经董事会审议通过", "quote", "正在筹划，须经董事会审议通过"),
+])
+def test_planning_stage_evidence(title, quote, where, expected):
+    assert stage.detect(title, quote, BOARD) == {
+        "code": "planning", "label": "尚在筹划，尚未见董事会或股东会审议通过",
+        "quotes": [expected], "where": where,
+    }
+
+
+@pytest.mark.parametrize("title,quote,code", [
+    ("提议筹划事项", "正在筹划", "proposal"),
+    ("筹划进展", "经董事会审议通过", "board"),
+    ("筹划事项获股东大会审议通过", "说明", "shareholders"),
+    ("终止筹划事项", "公司此前在筹划", None), ("取消筹划事项", "说明", None),
+    ("事项公告", "进展说明", None),
+])
+def test_planning_stage_priority_and_exclusions(title, quote, code):
+    assert (stage.detect(title, quote, "正在筹划") or {}).get("code") == code
+
+
+@pytest.mark.parametrize("stance,revision,action", [
+    ("confirm", "none", "正在筹划此事"), ("confirm", "update", "正在筹划调整"),
+    ("new_version", "none", "正在筹划调整"),
+])
+def test_positive_planning_keeps_previous_file_and_explains_stage(stance, revision, action):
+    old = evidence(title="初版")
+    current = evidence("b", title="筹划公告", text="公司正在筹划", day="2026-10-22", stance=stance, revision=revision)
+    result = rules.evaluate([old, current], {"as_of": NOW})
+    assert result["card_status"] == {"a": "effective", "b": "effective"}
+    suffix = "，不等于方案已经改变" if action == "正在筹划调整" else ""
+    assert result["sentence"] == (f"{current['source_name']}已公告{action}，尚未见董事会或股东会审议通过{suffix}"
+                                  "（2026-10-22《筹划公告》）。在它之前、仍然有效的正式文件是2026-10-21《初版》。")
+
+
+@pytest.mark.parametrize("word", ["提议", "筹划"])
+@pytest.mark.parametrize("stance,state", [("deny", "denied"), ("mixed", "mixed")])
+def test_negative_early_stage_notice_can_supersede(word, stance, state):
+    old = evidence(text="公司披露相关" + word)
+    positive, negative = "已收到来函", "并未收到正式" + word
+    parts = [dict(stance="confirm", quote=positive), dict(stance="deny", quote=negative)]
+    new = evidence("b", title="澄清公告", text=positive + "，" + negative, day="2026-10-22", stance=stance, parts=parts)
+    result = rules.evaluate([old, new], {"as_of": NOW})
+    assert new["stage"]["code"] == {"提议": "proposal", "筹划": "planning"}[word]
+    assert result["state"] == state and result["invalidated_by"] == {"a": "b"}
+
+
+@pytest.mark.parametrize("word", ["提议", "筹划"])
+def test_previous_formal_file_must_predate_early_stage_notice(word):
+    old = {**evidence(title="同日决议"), "publish_time": "08:00"}
+    new = {**evidence("b", title=word + "公告", text="公告涉及" + word), "publish_time": "16:00"}
+    result = rules.evaluate([old, new], {"as_of": NOW})
+    assert result["basis"] == ["b"] and "在它之前" not in result["sentence"]
+    earlier = evidence("c", title="前一日决议", day="2026-10-20")
+    result = rules.evaluate([old, new, earlier], {"as_of": NOW})
+    assert result["sentence"].endswith("在它之前、仍然有效的正式文件是2026-10-20《前一日决议》。")
+
+
+@pytest.mark.parametrize("references", [["a", "c"], []])
+def test_correction_only_invalidates_named_files_when_given(references):
+    old = [evidence(key, day="2026-10-20") for key in ("a", "b", "c")]
+    correction = evidence("d", title="更正公告", text="更正此前说法，相关说法不实", stance="deny", revision="correction")
+    correction["revises"] = references
+    result = rules.evaluate([*old, correction], {"as_of": NOW})
+    targets = references or ["a", "b", "c"]
+    assert result["invalidated_by"] == {key: "d" for key in targets}
+    assert result["card_status"] == {c["id"]: "corrected" if c["id"] in targets else "effective" for c in [*old, correction]}
+
+
+@pytest.mark.parametrize("relation", ["same_occurrence", "follow_up"])
+def test_roundup_keeps_article_naming_event_company_in_title(relation):
+    title = COMPANY + "拟收购三家公司"
+    text = "。".join(n + "发布公告" for n in OTHERS)
+    card = cards.build_card(doc(title=title, kind="news", text=text), company_read(OTHERS),
+                            judge(quote=text, relation=relation), event())
+    assert card["relevant"] and card["relation"] == relation and card.get("relation_by") is None
