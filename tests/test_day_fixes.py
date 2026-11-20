@@ -9,6 +9,7 @@ BOARD = "公司于2026年10月30日召开第二届董事会第八次会议，审
 PENDING = "本次回购股份方案尚需提交公司股东会审议"
 LABELS = {
     "proposal": "只是提议，尚未见董事会或股东会审议通过",
+    "board_final": "董事会已审议通过，无需提交股东会审议",
     "board_pending": "董事会已审议通过，尚需提交股东会审议",
     "pending": "尚需提交股东会审议",
     "board": "董事会已审议通过",
@@ -277,7 +278,8 @@ def test_conditional_approval_is_not_evidence(text):
 
 
 @pytest.mark.parametrize("text,code", [
-    ("经董事会审议通过，无需提交股东大会审议", "board"),
+    # 下午按真实公告补了“无需提交股东会”这个阶段后，这一句的结果由 board 变成更具体的 board_final
+    ("经董事会审议通过，无需提交股东大会审议", "board_final"),
     ("本方案已经股东大会审议通过", "shareholders"),
     (BOARD + "。" + PENDING, "board_pending"),
     ("公司需另行披露进展，本次方案经董事会审议通过", "board"),
@@ -386,3 +388,49 @@ def test_roundup_keeps_article_naming_event_company_in_title(relation):
     card = cards.build_card(doc(title=title, kind="news", text=text), company_read(OTHERS),
                             judge(quote=text, relation=relation), event())
     assert card["relevant"] and card["relation"] == relation and card.get("relation_by") is None
+
+# ---- 2026-11-20 下午：按真实公告的检验结果补的两处 ----
+
+FINAL = "根据公司章程的规定，本次回购事项经三分之二以上董事出席的董事会会议决议通过，无需提交股东会审议"
+
+
+@pytest.mark.parametrize("body", [
+    # 授权条款里的“须由董事会或股东会重新表决的事项外”不是“尚需股东会审议”（真实公告里的写法）
+    "除涉及有关法律法规及公司章程规定须由董事会或股东会重新表决的事项外，依据市场条件决定继续实施本次回购方案",
+    "有关事项需要公司股东会另行表决的除外",
+])
+def test_authorization_clause_is_not_pending(body):
+    from app.stage import detect
+    assert detect("关于回购公司股份方案的公告", None, body) is None
+
+
+@pytest.mark.parametrize("body,quote_tail", [
+    (BOARD + "。" + FINAL, "无需提交股东会审议"),
+    (BOARD + "。本议案无需提交公司股东大会审议", "无需提交公司股东大会审议"),
+    # 同一份公告里既有授权条款又明说无需股东会：按“无需”处理，不能标成“尚需”
+    ("除规定须提交股东会重新审议的事项外，授权管理层办理。" + BOARD + "。" + FINAL, "无需提交股东会审议"),
+])
+def test_board_approved_and_no_shareholder_vote_needed(body, quote_tail):
+    from app.stage import detect
+    result = detect("关于回购公司股份方案的公告", None, body)
+    assert result["code"] == "board_final" and result["label"] == LABELS["board_final"]
+    assert result["where"] == "text" and BOARD in result["quotes"][0] and result["quotes"][1].endswith(quote_tail)
+
+
+def test_no_shareholder_vote_without_board_wording_stays_unlabelled():
+    from app.stage import detect
+    assert detect("关于回购公司股份方案的公告", None, FINAL.replace("董事会会议决议通过", "会议决议")) is None
+
+
+def test_board_final_sentences_and_keeps_as_previous_formal_file():
+    plan = evidence("a", text=BOARD + "。" + FINAL, day="2026-10-21", stance="confirm", revision="none")
+    result = rules.evaluate([plan], {"as_of": NOW})
+    assert result["state"] == "confirmed" and result["stage"]["code"] == "board_final"
+    assert "董事会已审议通过，无需提交股东会审议（" in result["sentence"]
+    changed = evidence("b", text=BOARD + "。" + FINAL, day="2026-10-22", stance="new_version", revision="none")
+    assert "董事会已审议通过新版本，无需提交股东会审议，以" in rules.evaluate([changed], {"as_of": NOW})["sentence"]
+    proposal = evidence("c", title="关于收到提议调整方案的公告", text="公司收到提议", day="2026-10-25",
+                        stance="new_version", revision="update")
+    later = rules.evaluate([plan, proposal], {"as_of": NOW})
+    assert later["card_status"]["a"] == "effective"
+    assert "在它之前、仍然有效的正式文件是2026-10-21" in later["sentence"]

@@ -19,7 +19,7 @@ def env(name: str) -> str:
 IFIND_NEWS_URL = "https://api-mcp.51ifind.com:8643/ds-mcp-servers/hexin-ifind-ds-news-mcp"
 FUYAO_BASE = "https://fuyao.aicubes.cn"
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-flash"   # 旧名 deepseek-chat 现在也是由它应答
 
 # 现场查询的上限，页面上会显示
 DAILY_QUERY_LIMIT = int(os.environ.get("DAILY_QUERY_LIMIT") or 10)

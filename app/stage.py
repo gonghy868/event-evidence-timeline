@@ -7,6 +7,7 @@ _LABELS = {
     "planning": "尚在筹划，尚未见董事会或股东会审议通过",
     "board_pending": "董事会已审议通过，尚需提交股东会审议",
     "pending": "尚需提交股东会审议",
+    "board_final": "董事会已审议通过，无需提交股东会审议",
     "board": "董事会已审议通过",
     "shareholders": "股东会已审议通过",
 }
@@ -17,8 +18,13 @@ _SHARE_BLOCK = re.compile(r"自|待|如|若|未|尚需|须|提交|提请|后")
 _BOARD_BLOCK = re.compile(r"未|待|尚需|拟提交")
 _SHARE_TITLE = re.compile(r"股东大?会决议公告")
 _SHARE = re.compile(r"股东大?会[^，。；\n]{0,20}?审议通过")
-_PENDING = re.compile(r"(?<![无不毋勿])(?:尚|仍)?[需须](?:经|提交|提请|报)?[^\W_]{0,12}?股东大?会[^\W_]{0,8}?(?:审议|批准|表决)")
-_BOARD = re.compile(r"董事会[^。；\n]{0,40}?审议通过")
+# “尚需/仍需……股东会审议”可以不带动词；单独的“需/须”后面必须紧跟“提交、提请、经、报”，
+# 否则“须由董事会或股东会重新表决的事项外”这类授权条款会被误认（真实公告里出现过）。
+_PENDING = re.compile(r"(?<![无不毋勿])(?:(?:尚|仍|还)[需须](?:经|提交|提请|报)?|[需须](?:经|提交|提请|报))"
+                      r"[^\W_]{0,12}?股东大?会[^\W_]{0,8}?(?:审议|批准|表决)")
+# 公告明说不用上股东会：这是回购方案公告里最常见的写法。
+_NO_SHAREHOLDERS = re.compile(r"(?:无需|无须|不需要?|毋须)(?:再)?(?:提交|提请|经|报)[^\W_]{0,8}?股东大?会[^\W_]{0,4}?(?:审议|批准|表决)")
+_BOARD = re.compile(r"董事会[^。；\n]{0,40}?(?:审议|决议)通过")  # 真实公告里两种写法都有
 _SENTENCE_END = "。；！？\n"
 _REJECTED = re.compile(r"未获通过|未通过|未获得通过|否决")
 _STOPPED = re.compile(r"终止|取消|撤回|撤销|不再")
@@ -113,8 +119,12 @@ def detect(title: str, quote: str | None, text: str) -> dict | None:
             return _result("shareholders", where, _excerpt(part, match))
 
     full = title + "\n" + text
-    pending = _PENDING.search(full)
+    exempt = _NO_SHAREHOLDERS.search(full)
+    # 原文明说“无需提交股东会审议”时，不再去找“尚需股东会”的措辞，避免把别的条款误认成待审。
+    pending = None if exempt else _PENDING.search(full)
     board = _approved(full, _BOARD, _BOARD_BLOCK)
+    if exempt and board:
+        return _result("board_final", "text", _excerpt(full, board), _excerpt(full, exempt))
     if pending and board:
         return _result("board_pending", "text", _excerpt(full, pending), _excerpt(full, board))
     if pending:

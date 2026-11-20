@@ -224,6 +224,8 @@ _STAGE_SENTENCES = {
                  "已公告正在筹划调整，尚未见董事会或股东会审议通过，不等于方案已经改变（{citation}）。"),
     "proposal": ("已公告收到相关提议，目前只是提议，尚未见董事会或股东会审议通过（{citation}）。",
                  "已公告收到调整提议，目前只是提议，尚未见董事会或股东会审议通过，不等于方案已经改变（{citation}）。"),
+    "board_final": ("董事会已审议通过，无需提交股东会审议（{citation}）。",
+                    "董事会已审议通过新版本，无需提交股东会审议，以{citation}为准。"),
     "board_pending": ("董事会已审议通过，尚需提交股东会审议（{citation}）。",
                       "董事会已审议通过新版本，尚需提交股东会审议，以{citation}为准。"),
     "pending": ("已公告此事，尚需提交股东会审议（{citation}）。", "已公告新版本，尚需提交股东会审议，以{citation}为准。"),
@@ -274,7 +276,7 @@ def _sentence(state, rule_no, reason, expired_from, basis, high, notes, expire_d
         if code in ("proposal", "planning") and last.get("source_key"):
             prev = next((c for c in reversed(high) if c.get("source_key") == last["source_key"]
                          and _DATE(c) < _DATE(last)
-                         and (c.get("stage") or {}).get("code") in ("board_pending", "pending", "board", "shareholders")), None)
+                         and (c.get("stage") or {}).get("code") in ("board_final", "board_pending", "pending", "board", "shareholders")), None)
             if prev:
                 sentence += f"在它之前、仍然有效的正式文件是{_DATE(prev)}《{prev['title']}》。"
         return sentence
