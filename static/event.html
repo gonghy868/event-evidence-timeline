@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>事件详情 · 事件证据时间线</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="common.js"></script>
+  <script defer src="event.js"></script>
+</head>
+<body>
+  <header class="masthead compact"><div class="wrap">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>事件证据时间线</span></div>
+    <a class="back" href="index.html">← 回首页</a>
+  </div></header>
+  <main class="wrap"><div id="load-status" aria-live="polite">正在读取事件…</div>
+    <div id="event-content" hidden>
+      <section class="panel event-head"><div id="overview"></div><div id="controls"></div><div id="refresh-status" aria-live="polite"></div></section>
+      <section class="panel"><h2>① 当前结论</h2><div id="result"></div></section>
+      <section class="panel"><h2>② 证据回放</h2>
+        <p class="muted">按各条证据的发布时间，一条一条加入，看当时的结论是什么、有没有变、为什么变。这是按发布时间回放的推演，不是我们当天实际记录下来的。</p>
+        <div id="replay"></div></section>
+      <section class="panel"><h2>③ 证据时间线</h2>
+        <p class="muted">每张卡片是一条证据。“性质”说的是被引用的那句话怎么说，“可信程度”说的是来源，两样是分开的。</p>
+        <div id="timeline"></div></section>
+      <section class="panel"><h2>④ 说法对照</h2><div id="comparisons"></div>
+        <p class="muted">不同口径的数字不放在一起比。原句里没写的项目留空。数字归组由 AI 建议、程序核对编号后排表。</p></section>
+      <section class="panel"><h2>⑤ 和我关注的股票有什么关系</h2><p id="watch-note" class="muted"></p>
+        <p>这里只写事实关系，不判断影响好坏。</p><div id="relations"></div></section>
+    </div>
+  </main>
+  <footer class="wrap">数据来源：同花顺 iFinD（公告、新闻检索）、扶摇（个股新闻、行业分类）。AI：DeepSeek，只负责读原文。本产品只整理公开信息，不预测涨跌，不提供买卖建议。</footer>
+</body>
+</html>

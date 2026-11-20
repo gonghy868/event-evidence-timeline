@@ -1,0 +1,8 @@
+﻿.venv/
+__pycache__/
+.pytest_cache/
+.codex-worker/
+.env
+*Key.txt
+data/
+数据/

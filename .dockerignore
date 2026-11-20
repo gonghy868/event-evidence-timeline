@@ -1,0 +1,11 @@
+.venv
+.git
+.codex-worker
+.pytest_cache
+__pycache__
+tests
+docs
+data
+*.md
+.env
+*Key.txt
