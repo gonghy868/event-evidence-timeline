@@ -1,7 +1,9 @@
 import json
 from copy import deepcopy
+from html.parser import HTMLParser
 from pathlib import Path
 import subprocess
+from xml.etree import ElementTree
 
 import pytest
 
@@ -20,10 +22,14 @@ def card(key, **changes):
     return {**base, **changes}
 
 
-def render(view):
+def render(view, **options):
     run = subprocess.run(["node", "tests/test_review_render.js"], cwd=Path(__file__).resolve().parents[1],
-                         input=json.dumps(view), stdout=subprocess.PIPE, encoding="utf-8", check=True)
+                         input=json.dumps(dict(view=view, **options)), stdout=subprocess.PIPE, encoding="utf-8", check=True)
     return json.loads(run.stdout)
+
+
+def dom(area):
+    return ElementTree.fromstring(area["xml"])
 
 
 def number(key, value, what, quote):
@@ -69,7 +75,48 @@ def test_price_and_advice_in_card_comparisons_relations_and_relay():
     assert "1,200元" not in views.event_summary(e, NOW)["sentence"]
     page = render(view)
     assert all("建议投资者买入" not in area["visible"] for area in page.values())
+    assert all("1,200元" not in area["visible"] for area in page.values())
+    assert "建议投资者买入" not in page["timeline"]["cardDetails"]
     assert "建议投资者买入" in page["timeline"]["full"]
+    assert folded in page["comparisons"]["full"]
+    assert "建议投资者买入" not in page["comparisons"]["full"] and "1,200元" not in page["comparisons"]["full"]
+
+
+@pytest.mark.parametrize("changed,unchanged", [(0, 2), (4, 0), (6, 2)])
+def test_number_comparison_groups_by_api_changed(changed, unchanged):
+    view = views.event_view(event(cards=[]), NOW)
+    metrics = view["comparisons"]["numbers"]
+    view["comparisons"]["conflicts"] = [dict(type="time_claims", title=t, claims=[], ruling="以公告为准")
+                                       for t in ("时间冲突甲", "时间冲突乙")]
+    for i in range(max(changed, unchanged)):
+        # 相同显示值也可被接口标为变化；不同写法也可代表同一个数值。
+        if i < unchanged:
+            metrics.append(dict(name=f"持平指标{i}", changed=False,
+                                rows=[dict(value=1, unit="万元", version="初版"), dict(value="10000", unit="元", version="新版")]))
+        if i < changed:
+            metrics.append(dict(name=f"变化指标{i}", changed=True, rows=[dict(value=v, unit="元") for v in (1, "1")]))
+
+    area = render(view)["comparisons"]
+    visible, full = area["visible"], area["full"]
+    names = [f"变化指标{i}" for i in range(changed)]
+    stable = [f"持平指标{i}" for i in range(unchanged)]
+    assert "点开查看" not in full
+    assert all(name in visible for name in names + stable)
+    assert visible.count("前后有变化") == changed
+    ordered = ["时间冲突甲", "时间冲突乙", *names, *stable]
+    assert [visible.index(t) for t in ordered] == sorted(visible.index(t) for t in ordered)
+    assert [full.index(t) for t in ordered] == sorted(full.index(t) for t in ordered)
+    blocks = dom(area).findall("./details[@class='metric']")
+    assert len(blocks) == changed + unchanged
+    assert "数值和单位" not in visible
+    for block, metric in zip(blocks, [*names, *stable]):
+        summary = block.find("summary")
+        assert block.get("open") is None
+        assert summary.findtext("span[@class='metric-name']") == metric
+        values = "1元" if metric in names else "1万元、10000元"
+        assert summary.findtext("span[@class='metric-values']") == "出现过：" + values
+        assert (summary.find("span[@class='tag changed']") is not None) == (metric in names)
+        assert [th.text for th in block.findall(".//th")] == ["日期", "来源", "版本", "数值和单位", "指的是什么", "原句", "卡片状态"]
 
 
 def test_warning_labels_and_missing_industry_render():
@@ -125,8 +172,9 @@ def test_repost_shows_voided_count_and_note_in_page():
     view = views.event_view(event(cards=[card("a"), copy]), NOW)
     child, = view["cards"][0]["reposts"]
     assert child["voided_count"] == 1 and child["repost_note"] == copy["repost_note"]
-    text = render(view)["timeline"]["full"]
-    assert "有 1 项 AI 提取未通过核对" in text and copy["repost_note"] in text
+    timeline = render(view)["timeline"]
+    assert "另有 1 家转载或转述，不重复计数" in timeline["visible"]
+    assert "有 1 项 AI 提取未通过核对" in timeline["visible"] and copy["repost_note"] in timeline["visible"]
 
 
 def test_time_conflict_survives_quote_mask_and_uses_originating_copy():
@@ -162,3 +210,530 @@ def test_older_card_has_unknown_direction_check():
     old = card("old")
     old.pop("direction_check", None)
     assert views.event_view(event(cards=[old]), NOW)["cards"][0]["direction_check"] is None
+
+
+def test_source_summary_and_limits_in_details():
+    sources = {"notice": dict(ok=True, last_success_at=NOW),
+               "news": dict(ok=True, last_success_at="2026-10-24T04:30:00Z", truncated=True)}
+    view = views.event_view(event(cards=[], sources=sources), NOW)
+    overview = render(view)["overview"]
+    assert "资料取于 2026-10-24 12:30（北京时间），可能没列全相关资料，结论只依据已查到的内容" in overview["visible"]
+    assert "结果可能被条数上限截断" in overview["full"] and "结果可能被条数上限截断" not in overview["visible"]
+    for text in ("最近成功取数：", "每次最多取 17 条公告片段、23 条新闻，检索最近 41 天。"):
+        assert text in overview["full"] and text not in overview["visible"]
+    sources["notice"].update(ok=False, simulated=True, error="测试错误")
+    sources["news"]["last_success_at"] = "2026-10-20T12:00:00+08:00"
+    sources["fuyao_news"] = dict(ok=False)
+    overview = render(views.event_view(event(cards=[], sources=sources), NOW))["overview"]
+    assert "公告检索（iFinD）（模拟）、个股新闻（扶摇）这次没取到，可能没列全相关资料，结论只依据已查到的内容，部分来源超过 24 小时没复查" in overview["visible"]
+    assert "这次取数失败（模拟）" in overview["full"] and "测试错误" in overview["full"]
+    assert "没有取到数据来源记录。" in render(views.event_view(event(cards=[]), NOW))["overview"]["visible"]
+    sources["news"].pop("last_success_at")
+    assert "新闻检索（iFinD）：未提供取数时间" in render(views.event_view(event(cards=[], sources=sources), NOW))["overview"]["visible"]
+
+
+def test_evidence_and_report_detail_visibility():
+    quote = "研报建议投资者买入。目标价为1,200元"
+    report = card("a", source_type="broker_report", quote=quote, text=quote, advice_flag=True,
+                  also=[dict(quote=quote)], voided=[dict(field="数字", value="9", reason="原文未提及")])
+    page = render(views.event_view(event(cards=[report]), NOW))
+    timeline = page["timeline"]
+    for text in ("第三方观点，非本产品判断", "有 1 项 AI 提取的内容没通过原文核对，已作废"):
+        assert text in timeline["visible"]
+    for text in ("和这件事的关系：", "发生时间", "发布时间（披露）", "取数时间", "更新时间", "同一篇里的其它说法", "查看取到的原文片段"):
+        assert text not in timeline["visible"] and text in timeline["cardDetails"]
+    assert timeline["cardDetails"].count("—") >= 2
+    for mode in ("visible", "cardDetails"):
+        assert "建议投资者买入" not in timeline[mode] and "1,200元" not in timeline[mode]
+    assert "建议投资者买入" in timeline["full"] and "1,200元" not in timeline["full"]
+    assert "测试规则" not in page["result-foot"]["visible"] and "测试规则" in page["result-foot"]["full"]
+
+
+@pytest.mark.parametrize("advice", [False, True])
+def test_other_claims_summary_above_relation(advice):
+    claims = [
+        dict(nature="speculation", nature_label="推测", what="收入可能承压", quote="全年收入或将面临压力。"),
+        dict(nature="opinion", nature_label="观点", what="回购比例仍较低", quote="我们认为回购比例偏低。"),
+        dict(nature="opinion", nature_label="观点", what="对后续持保留意见", quote="我们仍有疑虑。"),
+    ]
+    timeline = render(views.event_view(event(cards=[card("a", also=claims, advice_flag=advice)]), NOW))["timeline"]
+    summary = "同一篇里还有 3 句：推测、观点、观点"
+    assert summary + "时间、数字和原文" in timeline["visible"].replace("\n", "")
+    assert "和这件事的关系：" not in timeline["visible"] and "和这件事的关系：" in timeline["cardDetails"]
+    for claim in claims:
+        assert claim["quote"] not in timeline["visible"] and claim["quote"] in timeline["full"]
+        assert (claim["quote"] in timeline["cardDetails"]) == (not advice)
+        assert claim["what"] not in timeline["visible"] and claim["what"] in timeline["full"]
+        assert (claim["what"] in timeline["cardDetails"]) == (not advice)
+
+
+def test_other_claims_summary_masks_what_and_handles_missing_fields():
+    claims = [dict(nature="rumor", nature_label="传闻", quote="传闻中的说法"),
+              dict(nature="opinion", nature_label="观点", quote="研报作者的原句", what="强烈推荐，目标价为1,200元")]
+    report = card("a", source_type="broker_report", also=claims, advice_flag=False)
+    timeline = render(views.event_view(event(cards=[report, card("b", also=[])]), NOW))["timeline"]
+    visible = timeline["visible"].replace("\n", "")
+    assert visible.count("同一篇里还有") == 1
+    assert "同一篇里还有 2 句：传闻、观点时间、数字和原文" in visible
+    masked = "〔评价用语已隐去〕，【目标价已隐去】"
+    assert masked not in timeline["cardDetails"] and masked in timeline["full"]
+    assert "强烈推荐" not in visible and "1,200元" not in timeline["full"]
+    assert "第三方观点，非本产品判断" in visible
+    assert claims[1]["quote"] not in timeline["cardDetails"] and claims[1]["quote"] in timeline["full"]
+
+
+def test_keyfacts_values_links_and_empty_states():
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    first = view["earliest"]
+    step = view["replay"][0]
+    view["replay"] = [dict(step, state_changed=flag) for flag in (True, False, True)]
+    view["last_change"] = dict(date="2026-10-22", reason_label="出现新材料")
+    view["comparisons"] = dict(conflicts=[dict(type="time_claims", claims=[]), dict(type="opposite", sides=[])],
+                               numbers=[dict(changed=True, rows=[]), dict(changed="true", rows=[dict(value=v) for v in (1, 2)])])
+    for i, row in enumerate(view["relations"]):
+        row.update(kinds=[dict(type="party")] if i < 4 else [], industry_unknown=i == 5)
+    facts = dom(render(view)["keyfacts"]).findall("a")
+    assert [(f.get("href"), f.findtext("small"), f.findtext("strong")) for f in facts] == [
+        ("#card-a", "最早来源", "10-23 " + first["source_name"]), ("#sec-replay", "结论变化", "状态变过 1 次"),
+        ("#sec-compare", "说法分歧", "1 处说法相反"), ("#sec-watch", "关联自选", "4 只有关")]
+    names = "、".join(row["stock"]["name"] + "（当事公司）" for row in view["relations"][:3])
+    assert [f.findtext("small[@class='kf-sub']") for f in facts] == [
+        first["source_type_label"] + " · 取到的最早一条", "最近：10-22 出现新材料",
+        "1 篇发布时间说法不一 · 1 个数字有变化", names + "等 · 有行业分类没取到"]
+    assert [("warning" in f.get("class").split()) for f in facts] == [False, False, True, True]
+    for f in facts:
+        assert "keyfact" in f.get("class").split()
+        assert [n.get("class") for n in f] == ["kf-label", "kf-value", "kf-sub"]
+    view.update(earliest=None, replay=[], last_change=None, comparisons=dict(numbers=[], conflicts=[]), relations=[])
+    facts = dom(render(view)["keyfacts"]).findall("a")
+    assert [f.findtext("strong") for f in facts] == ["没有取到", "—", "未发现相反说法", "未发现"]
+    assert all(f.findtext("small[@class='kf-sub']") == "" for f in facts)
+    assert facts[0].get("href") == "#sec-evidence" and "warning" in facts[0].get("class").split()
+    view["replay"] = [dict(step, state_changed=True)]
+    assert "状态没变" in render(view)["keyfacts"]["visible"]
+
+
+def test_replay_track_selection_playback_and_current_summary():
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    step = view["replay"][0]
+    added = dict(title="新公告", source_name="甲公司", tier_label="高")
+    invalid = dict(title="旧公告", status_label="已更正", by_title="新公告")
+    view["replay"] = [
+        dict(step, date="2026-10-20", time="09:10", state_changed=True, sentence="首次结论"),
+        dict(step, date="2026-10-20", time="12:00", state_changed=True, order_unknown=True, sentence="第二次结论",
+             added=[added, dict(added, title="补充公告")], newly_invalidated=[invalid], reason="update", reason_label="新版本"),
+        dict(step, date="2026-11-25", time=None, kind="as_of_check", state_changed=False,
+             state="unsupported", sentence="期末结论", reason="none", reason_label="结论未变")]
+    def replay(*clicks):
+        return dom(render(view, clicks=clicks)["replay"])
+
+    default = replay()
+    assert [n.get("class") for n in default] == ["actions", "track", "replay-summary", "earliest"]
+    assert default.find("ol").get("scrollLeft") == "160"
+    assert [b.text for b in default.findall("./div/button")] == ["播放", "上一步", "下一步"]
+    buttons = default.findall("./ol/li/button[@class='track-step']")
+    assert [b.findtext("span[@class='track-date']") for b in buttons] == ["10-20 09:10", "10-20 12:00", "过期检查"]
+    assert [b.get("aria-current") for b in buttons] == ["false", "false", "step"]
+    assert [b.get("aria-label") for b in buttons] == [
+        f"第 {i} 步，{b.findtext('span')}，{step['state_label']}" for i, b in enumerate(buttons, 1)]
+    assert [b.find("i").get("class") for b in buttons] == ["dot state-" + step["state"]] * 2 + ["dot"]
+    assert buttons[0].findtext("span[@class='track-flag']") == "首次判定"
+    assert buttons[1].findtext("span[@class='track-flag changed']") == "结论变了"
+    assert buttons[1].findtext("span[@class='track-flag warning']") == "先后未明"
+    assert buttons[2].findtext("span[@class='track-flag']") == "现在"
+    panel = default.find("div[@class='replay-summary']")
+    assert panel.get("aria-live") == "polite"
+    assert panel.findtext("small") == "第 3 / 3 步 · 到判断时点（2026-11-25）做过期检查"
+    assert panel.findtext("p[@class='replay-sentence']") == "期末结论" and "结论未变" in list(panel.itertext())
+    play = ("replay", "button", 0)
+    previous = ("replay", "button", 1)
+    next_step = ("replay", "button", 2)
+    middle = replay(play, ("replay", ".track-step", 1), "tick")
+    assert middle.find("ol").get("scrollLeft") == "80" and middle.find(".//*[@scrolled]") is None
+    start = replay(play)
+    assert start.find("ol").get("scrollLeft") == "0" and start.find(".//*[@scrolled]") is None
+    assert [n.text for n in start.findall("div[@class='replay-summary']/div/span")] == [step["state_label"], "首次判定"]
+    assert [b.get("aria-current") for b in middle.findall("./ol/li/button")] == ["false", "step", "false"]
+    panel = middle.find("div[@class='replay-summary']")
+    assert panel.findtext("small") == "第 2 / 3 步 · 2026-10-20 12:00"
+    assert [n.text for n in panel.findall("div/span")] == [step["state_label"], "结论变了", "同一天，先后未明"]
+    assert [n.text for n in panel.findall("p")] == [
+        "第二次结论", "新增：《新公告》（甲公司 · 高）", "新增：《补充公告》（甲公司 · 高）",
+        "原因：新版本", "《旧公告》→ 已更正（因为《新公告》）"]
+    def sentence(*clicks):
+        return replay(*clicks).findtext(".//p[@class='replay-sentence']")
+    assert sentence(play) == sentence(previous, previous) == "首次结论"
+    assert sentence(play, "tick") == "第二次结论"
+    assert sentence(previous, next_step) == sentence(play, "tick", "tick", "tick") == "期末结论"
+
+
+@pytest.mark.parametrize("status", ["superseded", "corrected"])
+def test_inactive_summary_natures_and_jump_keep_advice_folded(status):
+    quote = "研报建议投资者买入。目标价为1,200元"
+    natures = [("fact", "事实陈述"), ("opinion", "观点"), ("opinion", "观点"),
+               ("speculation", "推测"), ("rumor", "传闻")]
+    claims = [dict(nature=n, nature_label=label, what="附加说法", quote=quote) for n, label in natures]
+    report = card("old", source_type="broker_report", quote=quote, text=quote, advice_flag=True, also=claims)
+    view = views.event_view(event(cards=[report]), NOW)
+    old = view["cards"][0]
+    old.update(status=status, status_label="旧版本", invalidated_by_title="新公告", direction_note=None)
+    page = render(view)
+    article = dom(page["timeline"]).find(".//article[@id='card-old']")
+    collapsed, = list(article)
+    assert article.get("class") == "evidence inactive" and collapsed.tag == "details"
+    assert collapsed.get("class") == "ev-collapsed" and collapsed.get("open") is None
+    summary = collapsed.find("summary")
+    assert [n.text for n in summary] == [old["source_type_label"], "事实陈述", "观点", "推测", "传闻",
+                                         old["third_party_note"], old["title"], "旧版本", "因为《新公告》"]
+    assert "第三方观点，非本产品判断" in page["timeline"]["visible"]
+    assert summary.findtext("span[@class='ev-title']") == old["title"]
+    assert all(n.tag == "span" for n in list(summary)[:-1])
+    assert "同一篇里还有" not in page["timeline"]["visible"]
+    assert "附加说法" not in page["timeline"]["visible"] and "建议投资者买入" not in page["timeline"]["visible"]
+    jumped = render(view, clicks=[["keyfacts", "a"]])["timeline"]
+    opened = dom(jumped).find(".//article[@id='card-old']")
+    assert opened.get("focused") and opened.get("scrolled") and "flash" in opened.get("class").split()
+    assert opened.find("details").get("open") and "同一篇里还有 5 句：" in jumped["visible"]
+    assert "第三方观点，非本产品判断" in jumped["visible"]
+    assert "建议投资者买入" not in jumped["cardDetails"] and "附加说法" not in jumped["visible"]
+    assert "建议投资者买入" in jumped["full"] and "1,200元" not in jumped["full"]
+
+
+@pytest.mark.parametrize("fields,warning", [
+    (dict(classified=False, unclassified_reason="读取失败"), "未能自动归类：读取失败"),
+    (dict(voided=[dict(field="数量", value="7", reason="原文未提及")]), "没通过原文核对，已作废"),
+    (dict(direction_note="两处方向不同"), "方向核对：两处方向不同"),
+    (dict(title_check=dict(ok=False, keyword="否认")), "与 AI 的判断不一致"),
+    (dict(repost_count=1, reposts=[dict(voided_count=2)]), "有 2 项 AI 提取未通过核对"),
+    (dict(repost_count=1, reposts=[dict(repost_note="转载说法不一致")]), "转载说法不一致"),
+])
+def test_inactive_warnings_keep_full_card_visible(fields, warning):
+    view = views.event_view(event(cards=[card("old")]), NOW)
+    view["cards"][0].update(status="corrected", direction_note=None)
+    view["cards"][0].update(fields)
+    area = render(view)["timeline"]
+    article = dom(area).find(".//article[@class='evidence inactive']")
+    assert article.find("details[@class='ev-collapsed']") is None and article.find("h3") is not None
+    assert warning in area["visible"]
+
+
+def test_reverse_evidence_days_weight_and_missing_date():
+    view = views.event_view(event(cards=[card("old")]), NOW)
+    base = view["cards"][0]
+    view["cards"] = [dict(base, id=str(i), publish_date=date) for i, date in enumerate(
+        [None, "", "2026-10-20", "2026-10-20", "2026-10-24"])]
+    page = render(view)
+    assert page["evidence-count"]["visible"] == "5"
+    days = dom(page["timeline"]).findall("section[@class='day']")
+    assert [d.findtext("div[@class='day-date']/strong") for d in days] == ["10-24", "10-20", "日期未提供"]
+    assert [d.findtext("div/small") for d in days] == ["2026", "2026", ""]
+    assert [[c.get("id") for c in d.findall("div[@class='day-items']/article")] for d in days] == [
+        ["card-4"], ["card-3", "card-2"], ["card-1", "card-0"]]
+    head = days[0].find(".//div[@class='ev-head']")
+    weight = head.find("span[@class='weight tier-high']")
+    assert weight.get("aria-label") == "证据分量：" + base["tier_label"] and weight.get("title") == base["tier_reason"]
+    assert [n.tag for n in weight] == ["i", "i", "i", "span"] and weight.findtext("span") == "分量" + base["tier_label"]
+    assert head.find("span[@class='tag status']") is None
+    assert "分量依据：" not in page["timeline"]["visible"] and "分量依据：" + base["tier_reason"] in page["timeline"]["cardDetails"]
+
+
+def test_metric_summary_deduplicates_values_without_dropping_table_rows():
+    view = views.event_view(event(cards=[]), NOW)
+    rows = [dict(value=v, unit="元", quote=f"第{i}份原文") for i, v in enumerate([20, 10, "20", 30])]
+    view["comparisons"]["numbers"] = [dict(name="金额", rows=rows)]
+    area = render(view)["comparisons"]
+    assert "出现过：20元、10元、30元" in area["visible"] and "份原文" not in area["visible"]
+    table = dom(area).find("./details[@class='metric']//table")
+    assert [r.findall("td")[5].text for r in table.findall("tbody/tr")] == [r["quote"] for r in rows]
+
+
+@pytest.mark.parametrize("all_folded", [False, True])
+def test_metric_summary_skips_protected_rows(all_folded):
+    view = views.event_view(event(cards=[card("report", source_type="broker_report"), card("news")]), NOW)
+    visible_id = "report" if all_folded else "news"
+    rows = [dict(card_id=key, value=v, unit="元") for key, v in
+            [(visible_id, 20), ("report", 99), (visible_id, 10), (visible_id, 20)]]
+    view["comparisons"]["numbers"] = [dict(name="金额", rows=rows, changed=True)]
+    area = render(view)["comparisons"]
+    block = dom(area).find("details[@class='metric']")
+    expected = "见展开后的表格（均来自第三方观点）" if all_folded else "20元、10元；另有第三方观点里的数值，展开后看"
+    assert block.findtext("summary/span[@class='metric-values']") == "出现过：" + expected
+    assert "99元" not in area["visible"] and "前后有变化" in area["visible"]
+    assert [r.findall("td")[3].text for r in block.findall(".//tbody/tr")] == ["20元", "99元", "10元", "20元"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_keyfacts_missing_evidence_and_incomplete_sources(failed, empty):
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    if empty:
+        view["cards"] = []  # 即使仍有步骤或最早来源，也以本次证据数为准。
+    view["sources"] = [dict(label="公告", ok=not failed)]
+    view["comparisons"] = dict(conflicts=[dict(type="time_claims", claims=[])], numbers=[])
+    view["relations"] = []
+    facts = dom(render(view)["keyfacts"]).findall("a")
+    if empty:
+        assert [f.findtext("strong") for f in facts] == ["没有取到", "—", "—", "—"]
+        assert "warning" in facts[0].get("class").split()
+    else:
+        assert [f.findtext("strong") for f in facts[1:]] == ["状态没变", "未发现相反说法", "未发现"]
+    note = "有来源没取到，可能不全"
+    assert facts[2].findtext("small[@class='kf-sub']") == "1 篇发布时间说法不一" + (" · " + note if failed else "")
+    assert facts[3].findtext("small[@class='kf-sub']") == (note if failed else "")
+    assert [("warning" in f.get("class").split()) for f in facts[2:]] == [failed, failed]
+    view["relations"] = [dict(stock=dict(name="甲"), kinds=[dict(type="party")])]
+    watch = dom(render(view)["keyfacts"]).findall("a")[3]
+    assert watch.findtext("strong") == "1 只有关"
+    assert watch.findtext("small[@class='kf-sub']") == "甲（当事公司）" + (" · " + note if failed else "")
+
+
+@pytest.mark.parametrize("has_steps", [False, True])
+def test_replay_earliest_full_source_link_and_caveat(has_steps):
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    if not has_steps:
+        view["replay"] = []
+    first = view["earliest"]
+    first.update(publish_time="09:30", caveat="这是接口给出的最早来源说明。")
+    root = dom(render(view)["replay"])
+    assert (root[-2].get("class") == "replay-summary") == has_steps
+    line = root[-1]
+    assert line.tag == "p" and line.get("class") == "earliest" and line.text == "取到的最早一条："
+    link = line.find("a")
+    assert link.get("href") == "#card-a"
+    assert link.text == f"{first['publish_date']} 09:30 · {first['source_type_label']} · {first['source_name']}《{first['title']}》"
+    assert line.findtext("small") == first["caveat"]
+    jumped = dom(render(view, clicks=[["replay", "a"]])["timeline"]).find(".//article")
+    assert jumped.get("scrolled") and jumped.get("focused")
+    view["earliest"] = None
+    assert dom(render(view)["replay"]).find("p[@class='earliest']") is None
+
+
+def test_evidence_section_explains_links_and_missing_time():
+    static = Path(__file__).resolve().parents[1] / "static"
+    html = (static / "event.html").read_text(encoding="utf-8")
+    start = html.index('<section class="panel" id="sec-evidence">')
+    section = ElementTree.fromstring(html[start:html.index("</section>", start) + len("</section>")])
+    assert section.findtext("h2") == "全部证据"
+    assert section.findtext("p[@class='muted']") == (
+        "引号里的话都在原文里核对过，没通过的会标出。“事实陈述、观点、推测、传闻”是 AI 对这句话的分类；“分量”只看来源是谁，和说了什么无关。"
+        "部分数据源不带原文链接，可按标题、编号、日期回查。时间栏里的“—”表示来源没给或原文没提。")
+    for filename, script in [("event.html", "event"), ("index.html", "home")]:
+        page = (static / filename).read_text(encoding="utf-8")
+        for asset in ("style.css", "common.js", script + ".js"):
+            assert f'"{asset}?v=8"' in page
+
+
+def test_event_renders_with_missing_arrays():
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    for key in ("sources", "replay", "excluded", "relayed_claims"):
+        del view[key]
+    del view["result"]["basis_cards"]
+    view["relations"] = [dict(stock=dict(name="甲")), dict(stock=dict(name="乙"), industry_unknown=True)]
+    view["comparisons"] = dict(conflicts=[dict(type="time_claims"), dict(sides=[dict(label="一方")]), {}],
+                               numbers=[dict(name="空指标")])
+    page = render(view)
+    assert "没有取到数据来源记录。" in page["overview"]["visible"]
+    assert dom(page["result"]).findtext(".//div[@class='basis']/span") == "无"
+    assert "没有可以回放的证据。" in page["replay"]["visible"]
+    assert "已排除" not in page["timeline"]["full"]
+    assert "空指标" in page["comparisons"]["visible"] and "一方" in page["comparisons"]["visible"]
+    assert "另有 1 只" in page["relations"]["visible"] and "没取到行业分类" in page["relations"]["visible"]
+    for key in ("cards", "relations", "comparisons"):
+        del view[key]
+    page = render(view)
+    assert page["evidence-count"]["visible"] == "0" and "没有发现互相矛盾的说法" in page["comparisons"]["visible"]
+
+
+def test_home_renders_with_missing_arrays():
+    page = render({}, home=True, meta=dict(limits=dict(quota_left=3, daily_query_limit=5)))
+    assert "今日剩余查询次数：3" in page["quota"]["visible"]
+    assert "每天上限 5 次" in page["rules"]["full"]
+    assert all("暂无事件。" in page[key]["full"] for key in ("examples", "scenarios", "queries"))
+
+
+def test_rest_stocks_share_one_line_with_synthetic_badge():
+    view = views.event_view(event(cards=[], is_synthetic=True), NOW)
+    rows = view["relations"][:4]
+    view["relations"] = rows
+    for i, row in enumerate(rows):
+        row.update(kinds=[dict(type="party")] if i == 0 else [], industry_unknown=i == 1)
+        row["stock"] = dict(name="甲乙丙丁"[i], thscode=str(i), synthetic=i == 2)
+    area = render(view)["relations"]
+    root = dom(area)
+    assert [n.get("class") for n in root] == ["relation-row", "relation-row", "relation-rest muted"]
+    assert "当事公司" in "".join(root[0].itertext()) and "没取到行业分类" in "".join(root[1].itertext())
+    assert "".join(root[2].itertext()) == "另有 2 只在已取到的证据中未发现直接关系：丙（2）构造数据、丁（3）"
+    assert root[2].findtext("span[@class='tag synthetic']") == "构造数据"
+    view["relations"] = rows[:2]
+    assert dom(render(view)["relations"]).find("p") is None
+
+
+def test_home_demo_rows_and_regular_entries():
+    item = dict(id="e", title="案例", company=dict(name="甲"), state="confirmed", state_label="已确认",
+                sentence="当前结论", demonstrates="规则说明")
+    listing = dict(examples=[item], queries=[item], scenarios=[item])
+    meta = dict(limits=dict(quota_left=3, daily_query_limit=5), watchlist=[], rules_text=[], media_whitelist=[], low_platforms=[])
+    page = render(listing, home=True, meta=meta)
+    row = dom(page["scenarios"]).find("a[@class='demo-row']")
+    assert row.get("href") == "event.html?id=e"
+    assert [(n.get("class"), n.text) for n in row] == [
+        ("demo-title", "案例"), ("tag state-confirmed", "已确认"), ("demo-what", "规则说明"), ("tag synthetic", "构造数据")]
+    assert "今日剩余查询次数：3" in page["quota"]["visible"]
+    for key in ("examples", "queries"):
+        entry = dom(page[key]).find("a[@class='entry']")
+        assert entry.get("href") == row.get("href") and entry.findtext("p") == "当前结论"
+        assert "→" not in page[key]["visible"] and "未提供取数时间" in page[key]["visible"]
+
+
+def test_home_query_extras_order_and_rule_copy():
+    class MainParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.tree = ElementTree.TreeBuilder()
+
+        def handle_starttag(self, tag, attrs):
+            self.tree.start(tag, dict(attrs))
+            if tag == "input":
+                self.tree.end(tag)
+
+        def handle_endtag(self, tag):
+            self.tree.end(tag)
+
+        def handle_data(self, data):
+            self.tree.data(data)
+
+    html = (Path(__file__).resolve().parents[1] / "static/index.html").read_text(encoding="utf-8")
+    parser = MainParser()
+    parser.feed(html[html.index("<main "):html.index("</main>") + len("</main>")])
+    hero, examples, recent, stocks, extras, rules = list(parser.tree.close())
+    assert [s.findtext("h2") for s in [hero, examples, recent, stocks, extras]] == [
+        "查一条消息的来龙去脉", "已整理的事件", "最近查过", "示例自选股", "特殊情况示例"]
+    assert hero.findtext("p") == "把公告、新闻、研报、网帖按时间排好，告诉你公司有没有回应、这条消息现在还算不算数。每个结论都附原话和出处。"
+    form = hero.find("form")
+    assert form.find(".//input[@id='company']").get("placeholder") == "公司名称或股票代码"
+    assert form.find(".//input[@id='topic']").get("placeholder") == "看到的消息，例如：回购金额调高、工厂停工"
+    assert form.find(".//input[@id='simulate']") is None
+    note = form.find(".//p[@id='simulate-note']")
+    assert note.get("class") == "message warning" and "hidden" in note.attrib
+    assert note.text == "已打开“模拟公告查不到”：下一次查询里，公司公告会被故意取不到。"
+    assert note.findtext("button[@class='text-button'][@type='button']") == "关掉"
+    ids = [n.get("id") for n in form.iter()]
+    assert ids.index("simulate-note") < ids.index("quota")
+    assert examples.findtext("p[@class='muted']") == "数据来自真实的公告和报道。"
+    assert recent.get("id") == "query-section" and "hidden" in recent.attrib
+    assert stocks.findtext("p[@id='watch-note']") == "一份示例名单，不是真实持仓。事件页会标出事件和这些股票的关系。"
+    assert extras.get("aria-labelledby") == "extras-title" and extras.get("class") == "home-section extras"
+    assert extras.findtext("p") == "虚构的公司和故障模拟，用来看结论在更正、过期、说法冲突、公告查不到时怎么变。"
+    assert extras.findtext("div[@id='scenarios']") == "正在读取示例…"
+    checkbox = extras.find(".//label/input[@id='simulate']")
+    assert checkbox.tail == "模拟公告查不到" and checkbox.get("aria-describedby") == "simulate-help"
+    assert extras.findtext(".//small[@id='simulate-help']") == "勾上后，用页面顶部的查询框查一次，看公告取不到时页面怎么提示。"
+    assert rules.tag == "details" and rules.findtext("summary") == "判断规则"
+    assert [(n.tag, n.text) for n in rules.find("dl")] == [
+        ("dt", "已整理的事件"), ("dd", "数据提前取好，和现场查询走同一套流程。"),
+        ("dt", "特殊情况示例"), ("dd", "构造的输入走同一套流程，不是写死的结果页。"),
+        ("dt", "模拟公告查不到"), ("dd", "查询照常进行，只是“检索公告”这一步被强制失败。")]
+
+
+@pytest.mark.parametrize("clicks,on", [([], False), (["simulate"], True),
+                                      (["simulate", "simulate"], False), (["simulate", "simulate-off"], False)])
+def test_simulation_checkbox_and_form_warning(clicks, on):
+    page = render({}, home=True, meta=dict(limits=dict(quota_left=1)), clicks=clicks)
+    assert bool(dom(page["simulate"]).get("checked")) == on
+    assert bool(dom(page["simulate-note"]).get("hidden")) == (not on)
+
+
+def test_home_demo_descriptions_and_watchlists():
+    descriptions = {
+        "demo-conflict": "公司说已拿到许可证，发证机构说还没核发。",
+        "demo-correction": "公司先发公告，后来又发了更正公告。",
+        "demo-expiry": "一条传闻超过 30 天没人证实也没人否认。可切换第 29、30、31 天。",
+        "demo-inquiry": "交易所先发函问询，公司随后否认。",
+        "demo-mixed": "同一条消息，公司只确认了一部分。",
+        "unlisted": "接口原文",
+    }
+    listing = dict(scenarios=[dict(id=key, demonstrates="接口原文") for key in descriptions])
+    real = dict(name="甲", thscode="A")
+    fake = [dict(name=name, thscode=code, synthetic=True) for name, code in [("乙", "B"), ("丙", "C")]]
+    meta = dict(limits=dict(quota_left=0), watchlist=[*fake, real], watchlist_note="接口说明")
+    page = render(listing, home=True, meta=meta)
+    assert [n.text for n in dom(page["scenarios"]).findall("a/span[@class='demo-what']")] == list(descriptions.values())
+    assert [n.text for n in dom(page["watchlist"])] == ["甲（A）"]
+    assert "接口说明" not in page["watch-note"]["visible"]
+    assert page["synthetic-stocks"]["visible"] == "示例里用到的虚构股票：乙（B）、丙（C）"
+    assert dom(page["query-section"]).get("hidden")
+    meta["watchlist"] = [real]
+    no_fake = render(dict(queries=[dict(id="q")]), home=True, meta=meta)
+    assert dom(no_fake["synthetic-stocks"]).get("hidden") and not dom(no_fake["query-section"]).get("hidden")
+    failed = render(listing, home=True, meta={})
+    assert "服务返回的数据格式有误" in failed["watchlist"]["visible"]
+
+
+@pytest.mark.parametrize("case", ["public", "missing", "empty", "folded", "unclassified", "no_basis"])
+def test_verdict_quotes_only_eligible_first_basis(case):
+    view = views.event_view(event(cards=[card("candidate"), card("later")]), NOW)
+    first, later = view["cards"]
+    first.update(quote="第一份的原话", source_name="第一来源", publish_date="2026-10-23")
+    later.update(quote="第二份可见原话", quote_folded=False)
+    view["result"]["basis_cards"] = [dict(id=c["id"], title=c["title"]) for c in (first, later)]
+    if case == "missing":
+        view["cards"] = [later]
+    elif case == "empty":
+        first["quote"] = ""
+    elif case == "folded":
+        first.update(quote_folded=True, quote="建议投资者买入。")
+    elif case == "unclassified":
+        first["classified"] = False
+    elif case == "no_basis":
+        view["result"]["basis_cards"] = []
+    page = render(view)["result"]
+    body = dom(page).find(".//div[@class='verdict-body']")
+    quote = body.find("div[@class='basis-quote']")
+    if case == "public":
+        assert list(body).index(quote) == list(body).index(body.find("div[@class='basis']")) + 1
+        assert quote.findtext("small") == "第一来源 2026-10-23 原文：" and quote.findtext("blockquote") == first["quote"]
+    else:
+        assert quote is None
+    assert "第二份可见原话" not in page["visible"] and "建议投资者买入" not in page["full"]
+
+
+def test_result_foot_rule_number_and_failure():
+    view = views.event_view(event(cards=[]), NOW)
+    view["as_of"] = "2026-10-24T04:30:00Z"
+    foot = render(view)["result-foot"]
+    root = dom(foot)
+    assert root.findtext("small") == "判断时点：2026-10-24 12:30（北京时间）。结论按固定规则得出，AI 只负责读原文。"
+    details = root.find("details")
+    hit = f"本次命中规则第 {view['result']['rule_no']} 条。"
+    assert details.findtext("summary") == "为什么是这个结论" and details[1].text == hit
+    assert details[2].findtext("ul/li") == "测试规则" and hit not in foot["visible"]
+    failed = render(view, meta={})["result-foot"]
+    assert "服务没有返回判断规则。" in failed["visible"] and hit not in failed["visible"]
+
+
+@pytest.mark.parametrize("synthetic", [False, True])
+def test_event_stocks_scope_shared_by_keyfacts_and_list(synthetic):
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    view["event"]["is_synthetic"] = synthetic
+    view["relations"] = [
+        dict(stock=dict(name="真甲"), kinds=[dict(type="mentioned"), dict(type="same_industry")]),
+        dict(stock=dict(name="虚乙", synthetic=True), kinds=[dict(type="party")], industry_unknown=True),
+        dict(stock=dict(name="真丙"), kinds=[]), dict(stock=dict(name="虚丁", synthetic=True), kinds=[])]
+    page = render(view)
+    watch = dom(page["keyfacts"]).findall("a")[3]
+    assert watch.findtext("strong") == ("2 只有关" if synthetic else "1 只有关")
+    assert watch.findtext("small[@class='kf-sub']") == "真甲（被原文提到、同行业）" + (
+        "、虚乙（当事公司） · 有行业分类没取到" if synthetic else "")
+    assert ("warning" in watch.get("class").split()) == synthetic
+    relations = page["relations"]["visible"]
+    assert ("虚乙" in relations) == synthetic and ("虚丁" in relations) == synthetic
+    assert f"另有 {2 if synthetic else 1} 只" in relations and "真丙" in relations
+
+
+def test_excluded_fold_only_when_results_exist():
+    view = views.event_view(event(cards=[]), NOW)
+    assert "已排除" not in render(view)["timeline"]["full"]
+    view["excluded"] = [dict(title="无关公告", source_name="来源", publish_date="2026-10-23", reason="其它事项")]
+    timeline = render(view)["timeline"]
+    assert "已排除 1 条（和这件事无关）" in timeline["visible"]
+    assert "无关公告" not in timeline["visible"] and "无关公告" in timeline["full"]

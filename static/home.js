@@ -5,6 +5,17 @@
   const input = byId("company");
   const candidates = byId("candidates");
   const feedback = byId("feedback");
+  const simulate = byId("simulate");
+  const simulateNote = byId("simulate-note");
+  function syncSimulation() {
+    simulateNote.hidden = !simulate.checked;
+  }
+  simulate.addEventListener("change", syncSimulation);
+  byId("simulate-off").addEventListener("click", () => {
+    simulate.checked = false;
+    syncSimulation();
+  });
+  syncSimulation();
   let chosen = null;
   let searchTimer;
   let searchVersion = 0;
@@ -13,33 +24,48 @@
     try {
       const meta = await api("/api/meta");
       const limits = meta.limits;
-      byId("disclaimer").replaceChildren(el("span", meta.disclaimer));
-      byId("quota").replaceChildren(el("span", `今天还可以查 ${limits.quota_left} 次（每天上限 ${limits.daily_query_limit} 次）。每次最多取 ${limits.notice_size} 条公告片段、${limits.news_size} 条新闻，检索最近 ${limits.lookback_days} 天。`));
-      byId("watch-note").replaceChildren(el("span", meta.watchlist_note));
-      byId("watchlist").replaceChildren(...meta.watchlist.map(stock => {
-        const chip = tag(company(stock), "stock");
-        if (stock.synthetic) chip.append(synthetic());
-        return chip;
-      }));
-      const names = group => group.map(item => item.name ?? item).join("、");
+      if (!Number.isInteger(limits?.quota_left)) throw new Error("服务返回的数据格式有误，请重试。");
+      byId("quota").replaceChildren(el("span", `今日剩余查询次数：${limits.quota_left}`));
+      const stocks = list(meta.watchlist);
+      byId("watchlist").replaceChildren(...stocks.filter(stock => !stock.synthetic).map(stock => tag(company(stock), "stock")));
+      const fictional = stocks.filter(stock => stock.synthetic).map(company);
+      const examples = byId("synthetic-stocks");
+      examples.hidden = !fictional.length;
+      examples.textContent = fictional.length ? UI.display("示例里用到的虚构股票：" + fictional.join("、")) : "";
+      const names = group => list(group).map(item => item.name ?? item).join("、");
       byId("rules").replaceChildren(lines(meta.rules_text), el("h3", "名单内财经媒体"),
         el("p", names(meta.media_whitelist)), el("h3", "个人或自媒体平台"), el("p", names(meta.low_platforms)),
-        el("p", "不在名单内的来源一律按“低”处理。30 天的过期期限是本产品自己定的假设值。", "muted"));
+        el("p", "不在名单内的来源一律按“低”处理。30 天的过期期限是本产品自己定的假设值。", "muted"),
+        el("p", `每天上限 ${limits.daily_query_limit} 次`, "muted"));
     } catch (error) {
-      for (const id of ["disclaimer", "quota", "watch-note", "rules"]) message(byId(id), error.message, true);
-      byId("watchlist").replaceChildren();
+      for (const id of ["quota", "watchlist", "rules"]) message(byId(id), error.message, true);
+      byId("synthetic-stocks").hidden = true;
     }
   }
 
-  function entry(item, scenario) {
+  function entry(item) {
     const link = el("a", null, "entry");
     link.href = eventUrl(item.id);
     const head = el("div", null, "entry-top");
-    if (item.is_synthetic || scenario) head.append(synthetic());
+    if (item.is_synthetic) head.append(synthetic());
     else head.append(el("small", company(item.company)));
-    head.append(el("span", "→", "arrow"));
-    link.append(head, el("h3", item.title), state(item), el("p", scenario ? item.demonstrates : item.sentence));
-    if (!scenario) link.append(el("small", item.refreshed_at ? "数据取于 " + UI.when(item.refreshed_at) + "（北京时间）" : "未提供取数时间", "entry-date"));
+    link.append(head, el("h3", item.title), state(item), el("p", item.sentence));
+    link.append(el("small", item.refreshed_at ? "数据取于 " + UI.when(item.refreshed_at) + "（北京时间）" : "未提供取数时间", item.refreshed_at ? "entry-date" : "entry-date warning"));
+    return link;
+  }
+
+  const demoDescriptions = new Map([
+    ["demo-conflict", "公司说已拿到许可证，发证机构说还没核发。"],
+    ["demo-correction", "公司先发公告，后来又发了更正公告。"],
+    ["demo-expiry", "一条传闻超过 30 天没人证实也没人否认。可切换第 29、30、31 天。"],
+    ["demo-inquiry", "交易所先发函问询，公司随后否认。"],
+    ["demo-mixed", "同一条消息，公司只确认了一部分。"],
+  ]);
+  function demoRow(item) {
+    const link = el("a", null, "demo-row");
+    link.href = eventUrl(item.id);
+    link.append(el("span", item.title, "demo-title"), state(item),
+      el("span", demoDescriptions.get(item.id) ?? item.demonstrates, "demo-what"), synthetic());
     return link;
   }
 
@@ -47,12 +73,12 @@
     try {
       const data = await api("/api/events");
       for (const key of ["examples", "scenarios", "queries"]) {
-        const items = data[key];
+        const items = list(data[key]);
         const grid = byId(key);
-        grid.replaceChildren(...items.map(item => entry(item, key === "scenarios")));
+        grid.replaceChildren(...items.map(key === "scenarios" ? demoRow : entry));
         if (!items.length) grid.append(el("p", "暂无事件。", "muted"));
       }
-      byId("query-section").hidden = !data.queries.length;
+      byId("query-section").hidden = !list(data.queries).length;
     } catch (error) {
       byId("query-section").hidden = false;
       for (const id of ["examples", "scenarios", "queries"]) message(byId(id), error.message, true);
@@ -159,7 +185,7 @@
       return;
     }
     submit({company_name: chosen.name, thscode: chosen.thscode, topic,
-      simulate_notice_failure: byId("simulate").checked});
+      simulate_notice_failure: simulate.checked});
   });
   loadMeta();
   loadEvents();

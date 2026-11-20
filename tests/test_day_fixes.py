@@ -2,7 +2,7 @@ import pytest
 
 from app import cards, pipeline, rules, stage, views
 from .fakes import COMPANY, NOW, FakeLLM, doc, event, judge, news, record
-from .test_review_views import render
+from .test_review_views import dom, render
 
 
 BOARD = "公司于2026年10月30日召开第二届董事会第八次会议，审议通过了《关于以集中竞价交易方式回购公司股份方案的议案》"
@@ -151,11 +151,19 @@ def test_stage_in_page_and_masked_in_view():
     assert stage == v["cards"][0]["stage"] and "77元" not in str(stage)
     assert "77元" in str(card["stage"])
     page = render(v)
-    for area in ("result", "timeline"):
-        assert "办理阶段：" + LABELS["board_pending"] in page[area]["visible"]
-    for q in stage["quotes"]:
-        assert f"依据原句：“{q}”" in page["result"]["visible"]
-    assert "（程序按公告里的固定措辞识别，不是 AI 判断）" in page["result"]["visible"]
+    assert "办理阶段：" + LABELS["board_pending"] in page["timeline"]["visible"]
+    verdict = dom(page["result"]).find("div[@class='verdict']")
+    badges, body = list(verdict)
+    assert badges.get("class") == "verdict-badges" and "large" in badges[0].get("class").split()
+    assert badges.findtext("span[@class='tag stage-badge']") == LABELS["board_pending"]
+    assert LABELS["board_pending"] in page["result"]["visible"] and body.find("p[@class='stage']") is None
+    assert "77元" not in page["result"]["full"]
+    details = dom(page["result"]).find(".//details[@class='stage-quotes']")
+    assert details.get("open") is None
+    assert [q.text for q in details.findall("blockquote")] == stage["quotes"]
+    assert f"查看这一步的原文依据（{len(stage['quotes'])} 句）" in page["result"]["visible"]
+    assert details[-1].tag == "small" and details[-1].text == "由程序按公告里的固定措辞识别，不是 AI 判断。"
+    assert details[-1].text not in page["result"]["visible"]
 
 
 @pytest.mark.parametrize("conflict", [False, True])

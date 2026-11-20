@@ -32,7 +32,7 @@ const UI = (() => {
 
   function lines(items) {
     const ul = el("ul");
-    for (const item of items) ul.append(el("li", item));
+    for (const item of list(items)) ul.append(el("li", item));
     return ul;
   }
 
@@ -40,12 +40,14 @@ const UI = (() => {
   function variant(key, allowed, prefix) {
     return allowed.includes(key) ? prefix + key : "";
   }
+  const stateClass = key => variant(key,
+    ["confirmed", "denied", "mixed", "conflict", "unverified", "expired", "insufficient"], "state-");
+  const tierClass = key => variant(key, ["high", "mid", "low"], "tier-");
   function state(data) {
-    return tag(data.state_label, variant(data.state,
-      ["confirmed", "denied", "mixed", "conflict", "unverified", "expired", "insufficient"], "state-"));
+    return tag(data.state_label, stateClass(data.state));
   }
   function tier(key, label) {
-    return tag(label, variant(key, ["high", "mid", "low"], "tier-"));
+    return tag(label, tierClass(key));
   }
   function nature(item) {
     return tag(item.nature_label, variant(item.nature, ["fact", "opinion", "speculation", "rumor"], "nature-"));
@@ -131,10 +133,11 @@ const UI = (() => {
       }
       notice.hidden = !job.notice;
       notice.textContent = display(job.notice);
-      steps.replaceChildren(...list(job.steps).map((step, index) => {
+      const jobSteps = list(job.steps);
+      steps.replaceChildren(...jobSteps.map((step, index) => {
         const li = el("li");
         li.append(el("strong", step.name), el("span", step.detail));
-        if (job.status === "running" && index === job.steps.length - 1) li.append(el("i", null, "spinner"));
+        if (job.status === "running" && index === jobSteps.length - 1) li.append(el("i", null, "spinner"));
         return li;
       }));
       if (job.status === "done" && job.event_id) return job.event_id;
@@ -149,5 +152,5 @@ const UI = (() => {
   }
 
   return {byId, list, display, el, button, fold, lines, tag, state, tier, nature, synthetic, company,
-    stamp, when, eventUrl, sourceLink, message, api, progress};
+    stateClass, tierClass, stamp, when, eventUrl, sourceLink, message, api, progress};
 })();

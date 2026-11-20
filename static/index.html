@@ -5,49 +5,61 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>事件证据时间线</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css">
-  <script defer src="common.js"></script>
-  <script defer src="home.js"></script>
+  <link rel="stylesheet" href="style.css?v=8">
+  <script defer src="common.js?v=8"></script>
+  <script defer src="home.js?v=8"></script>
 </head>
 <body>
   <header class="masthead"><div class="wrap">
     <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><h1>事件证据时间线</h1></div>
-    <p class="intro">听到一条关于某家公司的消息？这里把相关的公告、新闻、研报和网帖排成时间线，告诉你：最早是谁说的、哪些是事实哪些是传言、公司有没有正式回应、现在的结论是什么、依据哪一条。</p>
-    <div id="disclaimer" class="disclaimer">正在读取提示…</div>
   </div></header>
   <main class="wrap">
-    <section class="panel query-panel" aria-labelledby="query-title">
-      <h2 id="query-title">查一件事</h2>
-      <form id="query-form" novalidate>
+    <section class="home-hero" aria-labelledby="query-title">
+      <h2 id="query-title" class="intro">查一条消息的来龙去脉</h2>
+      <p class="muted">把公告、新闻、研报、网帖按时间排好，告诉你公司有没有回应、这条消息现在还算不算数。每个结论都附原话和出处。</p>
+      <form id="query-form" novalidate class="panel query-panel">
         <fieldset id="fields">
           <div class="query-fields">
             <div><label for="company">公司</label>
-              <input id="company" type="search" placeholder="输入公司名称或代码" autocomplete="off">
+              <input id="company" type="search" placeholder="公司名称或股票代码" autocomplete="off">
               <div id="candidates" aria-live="polite"></div><div id="selection" class="inline"></div>
             </div>
-            <div><label for="topic">事件</label><input id="topic" placeholder="例如：停工传闻、回购金额变更" maxlength="60"></div>
-            <button class="primary submit" type="submit">查询事件</button>
+            <div><label for="topic">事件</label><input id="topic" placeholder="看到的消息，例如：回购金额调高、工厂停工" maxlength="60"></div>
+            <button class="primary submit" type="submit">查一查</button>
           </div>
-          <div class="simulate"><label class="check"><input id="simulate" type="checkbox">模拟公告接口失败</label>
-            <small>演示用。打开后查询走的还是正式流程，只是“检索公告”这一步被强制失败，用来看产品在接口失败时怎么显示。</small></div>
+          <p id="simulate-note" class="message warning" hidden>已打开“模拟公告查不到”：下一次查询里，公司公告会被故意取不到。<button type="button" class="text-button" id="simulate-off">关掉</button></p>
+          <div class="query-foot">
+            <p id="quota" class="muted">正在读取查询额度…</p>
+          </div>
         </fieldset>
-        <p id="quota" class="muted">正在读取查询额度…</p>
       </form>
       <div id="feedback" aria-live="polite"></div>
     </section>
-    <section class="home-section" aria-labelledby="examples-title"><h2 id="examples-title">三个真实示例事件</h2>
-      <p class="muted">数据已提前取好，点开就能看；和现场查询走的是同一套流程。</p>
+    <section class="home-section" aria-labelledby="examples-title"><h2 id="examples-title">已整理的事件</h2>
+      <p class="muted">数据来自真实的公告和报道。</p>
       <div id="examples" class="event-grid">正在读取示例…</div></section>
-    <section class="home-section" aria-labelledby="scenarios-title"><h2 id="scenarios-title">规则演示（构造数据）</h2>
-      <p class="muted">下面几个场景用的是虚构的公司和公告，只用来演示规则；输入走的是和真实数据完全相同的处理流程，不是预先写好的结果页。</p>
-      <div id="scenarios" class="event-grid">正在读取演示…</div></section>
-    <section id="query-section" class="home-section" hidden><h2>查过的事</h2><div id="queries" class="event-grid"></div></section>
-    <section class="panel"><h2>我的关注</h2><p id="watch-note" class="muted">正在读取关注名单…</p><div id="watchlist" class="tags"></div></section>
-    <details class="panel"><summary>这个产品怎么判断</summary>
-      <p>AI 只负责读原文、整理成卡片并给出原文里的依据句；程序会核对这句话是否真的在原文里，对不上的作废。可信程度、当前状态、变化原因和说明句都由下面这些固定规则算，不由 AI 决定。</p>
+    <section id="query-section" class="home-section" hidden><h2>最近查过</h2><div id="queries" class="event-grid"></div></section>
+    <section class="home-section"><h2>示例自选股</h2><p id="watch-note" class="muted">一份示例名单，不是真实持仓。事件页会标出事件和这些股票的关系。</p><div id="watchlist" class="tags"></div></section>
+    <section class="home-section extras" aria-labelledby="extras-title">
+      <h2 id="extras-title">特殊情况示例</h2>
+      <p class="muted">虚构的公司和故障模拟，用来看结论在更正、过期、说法冲突、公告查不到时怎么变。</p>
+      <div id="scenarios" class="demo-list">正在读取示例…</div>
+      <div class="simulate">
+        <label class="check"><input id="simulate" type="checkbox" aria-describedby="simulate-help">模拟公告查不到</label>
+        <small id="simulate-help">勾上后，用页面顶部的查询框查一次，看公告取不到时页面怎么提示。</small>
+      </div>
+      <p id="synthetic-stocks" class="muted" hidden></p>
+    </section>
+    <details class="panel"><summary>判断规则</summary>
+      <p>AI 只读原文：把每篇整理成卡片，并指出依据的原句。程序核对这句话确实在原文里，对不上的作废。来源分量、当前结论、变化原因都按下面的固定规则算，不由 AI 决定。</p>
+      <dl>
+        <dt>已整理的事件</dt><dd>数据提前取好，和现场查询走同一套流程。</dd>
+        <dt>特殊情况示例</dt><dd>构造的输入走同一套流程，不是写死的结果页。</dd>
+        <dt>模拟公告查不到</dt><dd>查询照常进行，只是“检索公告”这一步被强制失败。</dd>
+      </dl>
       <div id="rules">正在读取规则…</div>
     </details>
   </main>
-  <footer class="wrap">数据来源：同花顺 iFinD（公告、新闻检索）、扶摇（个股新闻、行业分类）。AI：DeepSeek，只负责读原文。本产品只整理公开信息，不预测涨跌，不提供买卖建议。</footer>
+  <footer class="wrap">数据来源：同花顺 iFinD（公告、新闻检索）、扶摇（个股新闻、行业分类）。AI：DeepSeek，只负责读原文。<div>只整理公开信息，不预测涨跌，不给买卖建议。</div></footer>
 </body>
 </html>
