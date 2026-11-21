@@ -2,7 +2,7 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from . import compare, config, guard, labels, rules, store
+from . import brief, compare, config, guard, labels, rules, store
 from .ifind import beijing
 from .cards import RELATIONS, published
 from .relations import WATCHLIST_NOTE, relations
@@ -139,9 +139,10 @@ def event_summary(event, now):
     ctx, _ = _context(event, now)
     cards = [_display_card(c) for c in _visible_cards(event, event.get("as_of"))]
     result = rules.evaluate(cards, ctx)
+    first = next((c for c in cards if result["basis"] and c["id"] == result["basis"][0]), {})
     fields = _fields(_event_info(event), "id title company topic is_example is_synthetic demonstrates refreshed_at")
     return {**fields, "state": result["state"], "state_label": labels.STATE_LABELS[result["state"]],
-            "sentence": result["sentence"], "cards_total": len(cards)}
+            "state_short": brief.state_short(result["state"], brief.basis_who(first)), "sentence": result["sentence"], "cards_total": len(cards)}
 
 
 def _source_label(c):
@@ -168,6 +169,10 @@ def _replay(steps, by_id):
                **_fields(r, "state sentence notes basis"), "state_label": labels.STATE_LABELS[r["state"]],
                "reason": reason, "reason_label": labels.REASON_LABELS[reason], "state_changed": change["state_changed"],
                "from_state_label": labels.STATE_LABELS.get(change["from_state"]), "newly_invalidated": invalid}
+        first = by_id.get(r["basis"][0], {}) if r["basis"] else {}
+        row["state_short"] = brief.state_short(r["state"], brief.basis_who(first))
+        if change["from_state"]:
+            row["from_state_short"] = timeline[-1]["state_short"] if timeline else brief.state_short(change["from_state"])
         timeline.append(row)
         if reason != "none":
             last = {**_fields(row, "reason reason_label from_state_label date"), "step_index": s["index"],
@@ -282,10 +287,12 @@ def event_view(event, now: str, as_of: str | None = None, stale_source: bool = F
         row["kinds"] = [_public_quote(kind, by_id[kind["card_id"]]) if kind.get("card_id") else kind
                         for kind in row["kinds"]]
     warnings = event.get("warnings", [])
-    return {"event": _event_info(event), **_fields(ctx, "as_of expire_days stale_hours"), "sources": sources,
+    view = {"event": _event_info(event), **_fields(ctx, "as_of expire_days stale_hours"), "sources": sources,
             "warnings": warnings, "warning_labels": [_WARNING_LABELS.get(w, w) for w in warnings],
             "result": result, "last_change": last, "earliest": earliest, "replay": timeline, "excluded": excluded,
             "cards": [_card(c, r, by_id, copies[c["id"]]) for c in independent],
             "relayed_claims": relayed,
             "comparisons": {"numbers": _mask_text(metrics), "conflicts": _display_conflicts(raw_cards, r, by_id)},
             "relations": _mask_text(relation_rows), "watchlist_note": WATCHLIST_NOTE}
+    view["brief"] = brief.build(view)
+    return view

@@ -1,14 +1,14 @@
 // 在内存里运行真实页面脚本。取数只返回 Python 用例传来的 JSON。
 const fs = require("node:fs");
 const vm = require("node:vm");
-const {view, clicks = [], home = false, meta} = JSON.parse(fs.readFileSync(0, "utf8"));
+const {view, clicks = [], home = false, meta, responses = {}} = JSON.parse(fs.readFileSync(0, "utf8"));
 const escape = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
 
 class Element {
   constructor(tag) {
     this.tagName = tag.toUpperCase();
     this.children = [];
-    this.scrollLeft = 0;
+    this.value = "";
     this.textContent = "";
     this.className = "";
     this.attributes = {};
@@ -23,18 +23,12 @@ class Element {
     for (const node of nodes) node.parent = this;
     this.children.push(...nodes);
   }
-  replaceChildren(...nodes) { this.children = nodes; this.textContent = ""; }
+  replaceChildren(...nodes) { this.children = []; this.textContent = ""; this.append(...nodes); }
   get childElementCount() { return this.children.length; }
   get firstChild() { return this.children[0]; }
   addEventListener(type, listener) { this.listeners[type] = listener; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   scrollIntoView() { this.scrolled = true; }
-  getBoundingClientRect() {
-    const track = this.tagName === "OL" ? this : this.parent;
-    if (areas.get("event-content").hidden || !track.parent) return {left: 0, width: 0};
-    if (this === track) return {left: 30, width: 160};
-    return {left: 70 + track.children.indexOf(this) * 80 - track.scrollLeft, width: 80};
-  }
   focus() { this.focused = true; }
   *descendants() {
     for (const child of this.children) { yield child; yield* child.descendants(); }
@@ -43,6 +37,7 @@ class Element {
     const [tag, cls] = selector.split(".");
     return (!tag || this.tagName === tag.toUpperCase()) && (!cls || this.classes().includes(cls));
   }
+  querySelectorAll(selector) { return [...this.descendants()].filter(node => node.matches(selector)); }
   querySelector(selector) {
     const selectors = selector.split(", ");
     return [...this.descendants()].find(node => selectors.some(s => node.matches(s)));
@@ -56,7 +51,6 @@ class Element {
   xml() {
     const attrs = {...this.attributes};
     if (this.className) attrs.class = this.className;
-    if (this.classes().includes("track")) attrs.scrollLeft = this.scrollLeft;
     for (const key of ["href", "open", "id", "title", "hidden", "checked", "disabled", "scrolled", "focused"]) {
       if (this[key]) attrs[key] = this[key];
     }
@@ -70,7 +64,7 @@ class Element {
   insertRow() { return this.child("tr"); }
   text(visible, openedSummary) {
     if (visible && this.hidden) return "";
-    const closed = this.tagName === "DETAILS" && !this.open && this.firstChild.textContent !== openedSummary;
+    const closed = this.tagName === "DETAILS" && !this.open && !openedSummary?.(this);
     const nodes = visible && closed ? this.children.slice(0, 1) : this.children;
     return [this.textContent, ...nodes.map(n => n.text(visible, openedSummary))].join("\n");
   }
@@ -83,7 +77,6 @@ for (const match of html.matchAll(/<(\w+)\b[^>]*\sid="([^"]+)"[^>]*>/g)) {
   node.hidden = /\shidden\b/.test(match[0]);
   areas.set(match[2], node);
 }
-let tick;
 const context = vm.createContext({
   document: {
     createElement: tag => new Element(tag),
@@ -98,23 +91,32 @@ const context = vm.createContext({
   },
   window: {addEventListener() {}}, location: {search: "?id=test"},
   URLSearchParams, URL,
-  setInterval(fn) { tick = fn; return 1; }, clearInterval() { tick = undefined; },
-  fetch: async path => ({ok: true, json: async () => path === "/api/meta"
-    ? meta ?? {rules_text: ["测试规则"], limits: {notice_size: 17, news_size: 23, lookback_days: 41}} : view}),
+  setTimeout: setImmediate, clearTimeout: clearImmediate,
+  fetch: async path => ({ok: true, json: async () => responses[path] ?? (path === "/api/meta"
+    ? meta ?? {rules_text: ["测试规则"], limits: {notice_size: 17, news_size: 23, lookback_days: 41}} : view)}),
 });
 for (const file of ["static/common.js", home ? "static/home.js" : "static/event.js"]) {
   vm.runInContext(fs.readFileSync(file, "utf8"), context, {filename: file});
 }
-setImmediate(() => {
+setImmediate(async () => {
   if (!home && areas.get("event-content").hidden) throw new Error(areas.get("load-status").text(false));
   for (const action of clicks) {
-    if (action === "tick") { tick?.(); continue; }
     if (typeof action === "string") {
       const target = areas.get(action);
       if (target.tagName === "INPUT") {
         target.checked = !target.checked;
         target.listeners.change();
-      } else target.listeners.click();
+      } else if (target.tagName === "FORM") {
+        target.listeners.submit({preventDefault() {}});
+        await new Promise(setImmediate);
+      } else target.listeners.click({preventDefault() {}});
+      continue;
+    }
+    if (!Array.isArray(action)) {
+      const target = areas.get(action.input);
+      target.value = action.value;
+      target.listeners.input?.();
+      await new Promise(setImmediate);
       continue;
     }
     const [id, selector, index = 0] = action;
@@ -123,5 +125,7 @@ setImmediate(() => {
   }
   console.log(JSON.stringify(Object.fromEntries(Array.from(areas, ([id, node]) =>
     [id, {visible: node.text(true), full: node.text(false), xml: node.xml(),
-      cardDetails: node.text(true, "时间、数字和原文")}]))));
+      bodyText: node.text(true, n => n.classes().some(c => ["tl-item", "tl-more"].includes(c))),
+      cardDetails: node.text(true, n => n.classes().some(c => ["tl-item", "tl-more"].includes(c)) || n.firstChild.textContent === "详情"),
+      metricSummaries: node.text(true, n => n.firstChild.textContent.startsWith("全部数字 "))}]))));
 });

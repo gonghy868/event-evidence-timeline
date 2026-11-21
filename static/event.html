@@ -5,36 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>事件详情 · 事件证据时间线</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=10">
-  <script defer src="common.js?v=10"></script>
-  <script defer src="event.js?v=10"></script>
+  <link rel="stylesheet" href="style.css?v=17">
+  <script defer src="common.js?v=17"></script>
+  <script defer src="event.js?v=17"></script>
 </head>
 <body>
   <header class="masthead compact"><div class="wrap">
     <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>事件证据时间线</span></div>
-    <a class="back" href="index.html">← 首页</a>
+    <a class="back" href="index.html">首页</a>
   </div></header>
-  <nav class="section-nav" aria-label="本页内容"><div class="wrap">
-    <a href="#sec-result">结论</a><a href="#sec-replay">脉络</a><a href="#sec-evidence">证据</a>
-    <a href="#sec-compare">数字与分歧</a><a href="#sec-watch">自选股</a>
-  </div></nav>
-  <main class="wrap"><div id="load-status" aria-live="polite">正在读取事件…</div>
+  <main class="wrap narrow"><div id="load-status" aria-live="polite">正在读取事件…</div>
     <div id="event-content" hidden>
-      <section class="panel hero" id="sec-result">
-        <div id="overview"></div>
-        <div id="controls"></div><div id="refresh-status" aria-live="polite"></div>
-        <div id="result"></div><div id="keyfacts" class="keyfacts"></div><div id="result-foot"></div>
-      </section>
-      <section class="panel" id="sec-replay"><h2>事件脉络</h2>
-        <p class="muted">按发布时间逐条加入证据，看结论在哪一步变了。这是事后按时间重排的，不是当天的实时记录。</p>
-        <div id="replay"></div></section>
-      <section class="panel" id="sec-evidence"><h2>全部证据<span id="evidence-count" class="count"></span></h2>
-        <p class="muted">引号里的话都在原文里核对过，没通过的会标出。“事实陈述、观点、推测、传闻”是 AI 对这句话的分类；“分量”只看来源是谁，和说了什么无关。部分数据源不带原文链接，可按标题、编号、日期回查。时间栏里的“—”表示来源没给或原文没提。</p>
-        <div id="timeline"></div></section>
-      <section class="panel" id="sec-compare"><h2>数字与分歧</h2><div id="comparisons"></div>
-        <p id="metric-note" class="muted" hidden>不同口径的数字不放在一起比；原文没写的留空。分组由 AI 建议，程序核对后排表。</p></section>
-      <section class="panel" id="sec-watch"><h2>关联自选股</h2><p id="watch-note" class="muted"></p>
-        <p class="muted">只列事实关系，不判断好坏。</p><div id="relations"></div></section>
+      <section class="ev-top"><div id="overview"></div><div id="controls"></div><div id="refresh-status" aria-live="polite"></div></section>
+      <section class="verdict-card" id="sec-result"><div id="result"></div></section>
+      <section class="facts" id="keyfacts"></section>
+      <section class="block" id="sec-conflicts" hidden><h2 id="conflicts-title">说法相反</h2><div id="conflicts"></div></section>
+      <section class="block" id="sec-basis" hidden><h2>原文依据</h2><div id="basis"></div></section>
+      <section class="block" id="sec-sources"><div class="block-head" id="sources-head"><h2>来源</h2><a id="all-sources" href="#sec-timeline"></a></div><div id="sources"></div></section>
+      <section class="block" id="sec-timeline"><div class="block-head"><h2>时间线</h2><small class="muted">AI 摘要</small></div><div id="timeline"></div></section>
+      <section class="block" id="sec-numbers" hidden><h2>数字变化</h2><div id="comparisons"></div></section>
+      <section class="foot-line"><div id="relations"></div><p class="disclaimer">仅整理公开信息，不预测涨跌，不提供买卖建议</p></section>
     </div>
   </main>
   <footer class="wrap">数据来源：同花顺 iFinD（公告、新闻检索）、扶摇（个股新闻、行业分类）。AI：DeepSeek，只负责读原文。本产品只整理公开信息，不预测涨跌，不提供买卖建议。</footer>

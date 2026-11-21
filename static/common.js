@@ -7,7 +7,7 @@ const UI = (() => {
   function display(value) {
     const raw = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
     // 即使第三方原文里带有评价词，也不给这些词增加页面曝光。
-    return raw.replace(/(?:建议|推荐)(?:立即|逢低|逢高)?(?:买入|卖出|增持|减持|加仓|减仓)|(?:买入|卖出|增持|减持)评级|强烈推荐|必涨|必跌|稳赚/g, "〔评价用语已隐去〕");
+    return raw.replace(/(?:建议|(?:强烈)?推荐)[^\p{P}\r\n]{0,8}?(?:买入|卖出|增持|减持|加仓|减仓)|(?:买入|卖出|增持|减持)评级|强烈推荐|必涨|必跌|稳赚/gu, "〔评价用语已隐去〕");
   }
 
   function el(tag, value, className) {
@@ -44,7 +44,7 @@ const UI = (() => {
     ["confirmed", "denied", "mixed", "conflict", "unverified", "expired", "insufficient"], "state-");
   const tierClass = key => variant(key, ["high", "mid", "low"], "tier-");
   function state(data) {
-    return tag(data.state_label, stateClass(data.state));
+    return tag(data.state_short ?? data.state_label, stateClass(data.state));
   }
   function tier(key, label) {
     return tag(label, tierClass(key));
@@ -64,6 +64,16 @@ const UI = (() => {
     return new Date(moment.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
   }
   const eventUrl = id => "event.html?" + new URLSearchParams({id});
+  // 首页卡片上的结论句：去掉句中“日期《公告标题》”形式的出处（事件页里有完整出处），只留结论本身。
+  // 只认规则引擎固定的三种写法，认不出就原样返回。
+  function brief(sentence) {
+    const text = display(sentence);
+    const cite = "\\d{4}-\\d{2}-\\d{2}《[^》]*》";
+    const short = text.replace(new RegExp("，以" + cite + "为准"), "").replace(new RegExp("（" + cite + "）"), "")
+      .replace(new RegExp("以" + cite + "为准"), "").replace("，。", "。");
+    if (short === text) return text;
+    return /[。！？]$/.test(short) || !short ? short : short + "。";
+  }
 
   function sourceLink(title, raw) {
     if (typeof raw === "string" && /^https?:\/\//i.test(raw)) {
@@ -119,7 +129,7 @@ const UI = (() => {
     notice.hidden = true;
     const steps = el("ol", null, "progress-list");
     const status = el("div");
-    parent.replaceChildren(el("h3", "查询进度"), notice, steps, status);
+    parent.replaceChildren(el("h3", "查询中"), el("p", "预计 20–40 秒", "muted"), notice, steps, status);
     while (true) {
       let job;
       try {
@@ -152,5 +162,5 @@ const UI = (() => {
   }
 
   return {byId, list, display, el, button, fold, lines, tag, state, tier, nature, synthetic, company,
-    stateClass, tierClass, stamp, when, eventUrl, sourceLink, message, api, progress};
+    stateClass, tierClass, stamp, when, eventUrl, brief, sourceLink, message, api, progress};
 })();

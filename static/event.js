@@ -6,7 +6,6 @@
   const params = new URLSearchParams(location.search);
   const id = params.get("id");
   const endpoint = "/api/events/" + encodeURIComponent(id || "");
-  let playback;
   let version = 0;
   let metaRequest;
 
@@ -20,10 +19,9 @@
       const target = byId(targetId);
       if (!target) return;
       event.preventDefault();
-      const more = target.closest("details.more-evidence");
+      const more = target.closest("details.tl-more");
       if (more) more.open = true;
-      const collapsed = target.querySelector("details.ev-collapsed");
-      if (collapsed) collapsed.open = true;
+      target.open = true;
       target.scrollIntoView({block: "start"});
       target.focus({preventScroll: true});
       target.classList.remove("flash");
@@ -47,24 +45,17 @@
       if (source.stale) cell.append(tag(`超过 ${data.stale_hours} 小时没复查`, "warning"));
       sources.append(cell);
     }
-    const failed = records.filter(s => !s.ok).map(s => s.label + (s.simulated ? "（模拟）" : ""));
-    const missingTime = records.filter(s => s.ok && !s.last_success_at).map(s => s.label);
-    const latest = records.filter(s => s.ok && s.last_success_at).map(s => UI.when(s.last_success_at)).sort().pop();
-    const truncated = records.some(s => s.truncated);
-    const stale = records.some(s => s.stale);
-    const summary = [];
-    if (failed.length) summary.push(failed.join("、") + "这次没取到");
-    else if (latest) summary.push("资料取于 " + latest + "（北京时间）");
-    if (missingTime.length) summary.push(missingTime.join("、") + "：未提供取数时间");
-    if (truncated) summary.push("可能没列全相关资料，结论只依据已查到的内容");
-    if (stale) summary.push(`部分来源超过 ${data.stale_hours} 小时没复查`);
+    const summary = records.filter(s => s.ok === false).map(s => s.label + "获取失败" + (s.simulated ? "（模拟）" : ""));
+    if (records.some(s => s.truncated)) summary.push("本次检索可能不完整");
+    if (records.some(s => s.stale)) summary.push(`部分来源超过 ${data.stale_hours} 小时未更新`);
+    for (const source of records.filter(s => !s.last_success_at)) summary.push(source.label + "未提供取数时间");
+    if (!records.length) summary.push("没有取到数据来源记录。");
+    if (!summary.length) return [];
     const limitsLine = el("small");
-    const details = fold(summary.join("，") || "没有取到数据来源记录。", sources, limitsLine);
+    const details = fold(summary.join("；"), sources, limitsLine);
     details.className = "source-details";
     details.setAttribute("aria-label", "数据来源");
-    if (!records.length || failed.length || missingTime.length || truncated || stale) {
-      details.firstChild.classList.add("warning");
-    }
+    details.firstChild.classList.add("warning");
     const status = el("div");
     metaRequest.then(({meta, error}) => {
       const limits = meta?.limits;
@@ -72,18 +63,24 @@
         message(status, error?.message || "服务返回的数据格式有误，请重试。", true);
         return;
       }
-      limitsLine.textContent = `每次最多取 ${limits.notice_size} 条公告片段、${limits.news_size} 条新闻，检索最近 ${limits.lookback_days} 天。`;
+      limitsLine.textContent = `单次最多 ${limits.notice_size} 条公告片段、${limits.news_size} 条新闻，回溯 ${limits.lookback_days} 天`;
     });
     return [details, status];
   }
+
+  const sourceNoticeOnTop = data => !list(data.sources).length || list(data.sources).some(source => source.ok === false) || !list(data.cards).length;
 
   function overview(data) {
     const item = data.event;
     const area = byId("overview");
     const meta = el("div", null, "hero-meta");
-    meta.append(el("span", company(item.company), "company-name"), ...sourceDetails(data));
-    area.replaceChildren(meta, el("h1", item.title), el("p", "查的说法：" + item.claim, "claim"));
-    if (item.is_synthetic) area.append(el("p", "构造数据：本页的公司、机构、公告编号都是虚构的，只用来演示规则，不是真实事件。", "banner synthetic"));
+    meta.append(el("span", company(item.company), "company-name"));
+    const latest = list(data.sources).map(s => UI.when(s.last_success_at)).filter(Boolean).sort().pop();
+    if (latest) meta.append(el("span", "更新 " + latest.slice(5, 16)));
+    meta.append(el("span", "来源 " + list(data.cards).length));
+    // 有来源获取失败（或一条证据都没有）时，提示留在页面顶部；只是“可能不完整 / 超时未更新”时放到“来源”一节里，仍默认可见。
+    area.replaceChildren(meta, el("h1", item.title), ...(sourceNoticeOnTop(data) ? sourceDetails(data) : []));
+    if (item.is_synthetic) area.append(el("p", "示例数据：公司、机构、公告均为虚构", "banner synthetic"));
   }
 
   function controls(data) {
@@ -121,8 +118,8 @@
     check.checked = params.get("stale_source") === "1";
     check.addEventListener("change", () => reloadWith("stale_source", check.checked ? "1" : ""));
     const label = el("label", null, "check");
-    label.append(check, el("span", "假设数据来源已经超过 24 小时没复查"));
-    area.append(row, label, el("small", "用来看“过期”规则：正好 30 天不算过期，第 31 天才算；数据来源没及时复查时不判过期。"));
+    label.append(check, el("span", "模拟来源超过 24 小时未更新"));
+    area.append(row, label);
   }
 
   function reloadWith(key, value) {
@@ -132,213 +129,121 @@
     load();
   }
 
+  function basisSection(data) {
+    const area = byId("basis");
+    area.replaceChildren();
+    const result = data.result;
+    const refs = list(result.basis_cards);
+    const cards = new Map(list(data.cards).map(c => [c.id, c]));
+    const canCite = card => Boolean(card?.quote && !card.quote_folded && card.classified !== false);
+    const leadCard = cards.get(data.brief?.lead_card_id);
+    const first = canCite(leadCard) ? leadCard : cards.get(refs[0]?.id);
+    let count = 0;
+    if (canCite(first)) {
+      count++;
+      const cite = el("div", null, "cite");
+      const source = el("small", `[1] ${stamp(first.source_name, first.doc_no)} · ${monthDay(first.publish_date)} · `);
+      source.append(jump(first.id, `《${first.title}》`));
+      cite.append(el("blockquote", first.quote), ...partQuotes(first), source);
+      area.append(cite);
+    }
+    const stageCard = cards.get(refs.at(-1)?.id);
+    for (const quote of list(result.stage?.quotes)) {
+      const cite = el("div", null, "cite secondary");
+      const content = el("blockquote", quote);
+      cite.append(protectedQuotes(stageCard ?? {quote_folded: true}, content),
+        el("small", `[${++count}] 办理阶段依据（程序按固定措辞识别）`));
+      area.append(cite);
+    }
+    if (refs.length && !refs.some(ref => canCite(cards.get(ref.id)))) {
+      const basis = el("small", "依据：");
+      basis.append(...refs.map(basisLink));
+      area.append(basis);
+    } else {
+      // 其他依据多于 2 篇时收成一行，点开再列
+      const links = refs.filter(ref => ref.id !== (first?.id ?? refs[0]?.id)).map(basisLink);
+      if (links.length > 2) {
+        const list = el("ul");
+        for (const link of links) { const li = el("li"); li.append(link); list.append(li); }
+        area.append(fold(`其他依据 ${links.length} 篇`, list));
+      } else if (links.length) {
+        const other = el("small", "其他依据：");
+        other.append(...links);
+        area.append(other);
+      }
+    }
+    byId("sec-basis").hidden = !area.childElementCount;
+    return count;
+  }
+
+  function basisLink(ref) {
+    return jump(ref.id, `${stamp(monthDay(ref.publish_date), ref.source_name)}《${ref.title}》`);
+  }
+
   function conclusion(data) {
     const r = data.result;
-    const change = data.last_change;
-    const verdict = el("div", null, "verdict");
-    const body = el("div", null, "verdict-body");
-    const badge = state(r);
+    const brief = data.brief ?? {};
+    const head = el("div", null, "verdict-head");
+    const badge = state({...r, state_short: brief.status?.label ?? r.state_label});
     badge.classList.add("large");
-    const badges = el("div", null, "verdict-badges");
-    badges.append(badge);
-    if (r.stage) badges.append(tag(r.stage.label, "stage-badge"));
-    verdict.append(badges, body);
-    byId("result").replaceChildren(verdict);
-    const basis = el("div", null, "basis");
-    basis.append(el("strong", "依据"));
-    const basisCards = list(r.basis_cards);
-    const cardsById = new Map(list(data.cards).map(card => [card.id, card]));
-    let sentence = r.sentence;
-    for (const ref of basisCards) {
-      const card = cardsById.get(ref.id);
-      const source = card ?? ref;
-      const prefix = stamp(monthDay(source.publish_date), source.source_name);
-      basis.append(jump(ref.id, `${prefix}《${source.title}》`));
-      if (card?.publish_date && card.title) {
-        const cite = `${card.publish_date}《${card.title}》`;
-        sentence = sentence.replace(`，以${cite}为准`, "").replace(`（${cite}）`, "").replace(`以${cite}为准`, "");
+    head.append(badge);
+    if (brief.status?.stage) head.append(el("span", brief.status.stage, "stage-short"));
+    const line = el("p", (brief.lead || "") + UI.brief(r.sentence), "result-sentence");
+    line.title = UI.display(r.sentence);
+    const count = basisSection(data);
+    for (let i = 1; i <= count; i++) {
+      const ref = el("a", `[${i}]`, "ref");
+      ref.href = "#sec-basis";
+      line.append(ref);
+    }
+    const area = byId("result");
+    area.replaceChildren(head, line);
+    const progressSteps = list(brief.steps);
+    if (progressSteps.length >= 2) {
+      const steps = el("ol", null, "steps");
+      for (const step of progressSteps) {
+        const item = el("li", null, "step-" + step.state);
+        item.append(el("i", null, "step-bar"), el("strong", step.label),
+          el("small", step.date || ({current: "待定", todo: "—"})[step.state] || ""));
+        steps.append(item);
       }
-    }
-    if (sentence !== r.sentence) {
-      if (!sentence.endsWith("。")) sentence += "。";
-      sentence = sentence.replaceAll("，。", "。");
-    }
-    const sentenceLine = el("p", sentence, "result-sentence");
-    sentenceLine.title = UI.display(r.sentence);
-    if (!basisCards.length) basis.append(el("span", "无"));
-    body.append(sentenceLine, basis);
-    const firstBasis = basisCards[0];
-    const card = firstBasis && cardsById.get(firstBasis.id);
-    if (card?.quote && !card.quote_folded && card.classified !== false) {
-      const quote = el("div", null, "basis-quote");
-      quote.append(el("small", `${card.source_name} ${card.publish_date} 原文：`), el("blockquote", card.quote));
-      body.append(quote);
-    }
-    if (r.stage) {
-      const quotes = list(r.stage.quotes);
-      if (quotes.length) {
-        const details = fold(`查看这一步的原文依据（${quotes.length} 句）`,
-          ...quotes.map(quote => el("blockquote", quote)), el("small", "由程序按公告里的固定措辞识别，不是 AI 判断。"));
-        details.className = "stage-quotes";
-        body.append(details);
-      }
+      area.append(steps);
     }
     const notes = el("div", null, "tags");
     list(r.note_labels).forEach((label, index) => {
       const warning = ["news_missing", "data_stale", "nothing_usable"].includes(r.notes?.[index]);
       notes.append(tag(label, warning ? "warning" : ""));
     });
-    body.append(notes);
-    if (change) {
-      const transition = change.from_state_label && change.to_state_label && change.from_state_label !== change.to_state_label
-        ? `，由“${change.from_state_label}”变为“${change.to_state_label}”` : "";
-      body.append(el("p", `最近变化：${change.date} ${change.reason_label}${transition}`));
-    } else body.append(el("p", "最近变化：未提供", "muted"));
-    if (r.state === "expired") body.append(el("p", "原状态：" + r.expired_from_label));
-    else if (r.expire_blocked) body.append(el("p", `已经超过 ${data.expire_days} 天没有新的独立证据，但数据来源没有及时复查或结果被截断，所以不判“已过期”。`, "warning"));
-    else if (r.expire_on) body.append(el("p", `若一直没有新的独立证据，将于 ${r.expire_on} 转为“已过期”。（${data.expire_days} 天是本产品自己定的假设值。）`));
-  }
+    area.append(notes);
+    if (r.state === "expired") area.append(el("p", "原状态：" + r.expired_from_label));
+    else if (r.expire_blocked) area.append(el("p", `已超过 ${data.expire_days} 天无新增独立证据；来源未及时更新或结果不完整，暂不判定过期`, "warning"));
+    else if (r.expire_on) area.append(el("p", `无新增独立证据时，将于 ${r.expire_on} 标记为已过期`));
 
-  function resultFoot(data) {
     const rules = el("div", "正在读取规则…");
-    const ruleDetails = fold("为什么是这个结论", el("p", `本次命中规则第 ${data.result.rule_no} 条。`), rules);
-    const ruleError = el("div");
+    const details = fold("判定依据", el("p", `判断时点 ${UI.when(data.as_of)}（北京时间），命中规则第 ${r.rule_no} 条`), rules);
+    const errorArea = el("div");
+    const foot = el("div", null, "rule-line");
+    foot.append(el("small", "规则判定，AI 仅读取原文"), details, errorArea);
+    area.append(foot);
     metaRequest.then(({meta, error}) => {
       if (error || !Array.isArray(meta.rules_text)) {
-        ruleDetails.hidden = true;
-        message(ruleError, error?.message || "服务没有返回判断规则。", true);
-      } else {
-        rules.replaceChildren(lines(meta.rules_text));
-      }
+        details.hidden = true;
+        message(errorArea, error?.message || "服务没有返回判断规则。", true);
+      } else rules.replaceChildren(lines(meta.rules_text));
     });
-    byId("result-foot").replaceChildren(
-      el("small", `判断时点：${UI.when(data.as_of)}（北京时间）。结论按固定规则得出，AI 只负责读原文。`),
-      ruleDetails, ruleError, el("p", "只整理公开信息，不预测涨跌，不给买卖建议。", "disclaimer"));
   }
 
-  function visibleRelations(data) {
-    const rows = list(data.relations);
-    return data.event.is_synthetic ? rows : rows.filter(row => !row.stock.synthetic);
-  }
-
-  function keyfacts(data) {
+  function keyfacts(brief) {
     const area = byId("keyfacts");
     area.replaceChildren();
-    function fact(label, value, sub, href, warning, link = el("a")) {
-      if (href) link.href = href;
-      link.classList.add("keyfact");
-      if (warning) link.classList.add("warning");
-      link.append(el("small", label, "kf-label"), el("strong", value, "kf-value"), el("small", sub, "kf-sub"));
-      area.append(link);
+    for (const [key, title, style] of [["confirmed", "已确认", "ok"], ["unconfirmed", "未确认", "open"], ["watch", "待关注", "watch"]]) {
+      const entries = list(brief?.[key]);
+      if (!entries.length) continue;
+      const col = el("div", null, "fact-col");
+      col.append(el("h3", title, style), ...entries.map(text => el("div", text)));
+      area.append(col);
     }
-    const empty = list(data.cards).length === 0;
-    const failed = list(data.sources).some(source => source.ok === false);
-    const incomplete = failed ? "有来源没取到，可能不全" : "";
-    const first = data.earliest;
-    if (!empty && first) fact("最早来源", stamp(monthDay(first.publish_date), first.source_name),
-      first.source_type_label + " · 取到的最早一条", null, false, jump(first.card_id));
-    else fact("最早来源", "没有取到", "", "#sec-evidence", true);
-    const steps = list(data.replay);
-    const changes = steps.filter((step, index) => index > 0 && step.state_changed === true).length;
-    const last = data.last_change;
-    const changeText = empty || !steps.length ? "—" : changes ? `状态变过 ${changes} 次` : "状态没变";
-    fact("结论变化", changeText,
-      last ? "最近：" + stamp(monthDay(last.date), last.reason_label) : "", "#sec-replay");
-    const conflicts = list(data.comparisons?.conflicts);
-    const timing = conflicts.filter(item => item.type === "time_claims").length;
-    const opposite = conflicts.length - timing;
-    const metrics = list(data.comparisons?.numbers).filter(metric => metric.changed === true).length;
-    const differences = [timing && `${timing} 篇发布时间说法不一`, metrics && `${metrics} 个数字有变化`, incomplete];
-    fact("说法分歧", empty ? "—" : opposite ? `${opposite} 处说法相反` : "未发现相反说法",
-      differences.filter(Boolean).join(" · "), "#sec-compare", opposite > 0 || failed);
-    const rows = visibleRelations(data);
-    const related = rows.filter(row => list(row.kinds).length);
-    const unknown = rows.some(row => row.industry_unknown);
-    const labels = {party: "当事公司", mentioned: "被原文提到", same_industry: "同行业"};
-    let stocks = related.slice(0, 3).map(row => {
-      const kinds = list(row.kinds).map(kind => labels[kind.type]).filter(Boolean);
-      return `${row.stock.name}（${kinds.join("、")}）`;
-    }).join("、");
-    if (related.length > 3) stocks += "等";
-    const watchNotes = [stocks, unknown && "有行业分类没取到", incomplete];
-    fact("关联自选", related.length ? `${related.length} 只有关` : empty ? "—" : "未发现",
-      watchNotes.filter(Boolean).join(" · "), "#sec-watch", unknown || failed);
-  }
-
-  function replay(steps, first) {
-    const area = byId("replay");
-    area.replaceChildren();
-    function appendEarliest() {
-      if (!first) return;
-      const line = el("p", "取到的最早一条：", "earliest");
-      line.append(jump(first.card_id, `${stamp(first.publish_date, first.publish_time)} · ${first.source_type_label} · ${first.source_name}《${first.title}》`),
-        el("small", first.caveat));
-      area.append(line);
-    }
-    if (!steps.length) {
-      area.append(el("p", "没有可以回放的证据。", "empty warning"));
-      appendEarliest();
-      return;
-    }
-    let current = steps.length - 1;
-    const panel = el("div", null, "replay-summary");
-    panel.setAttribute("aria-live", "polite");
-    const items = el("ol", null, "track");
-    const actions = el("div", null, "actions");
-    function stop() { clearInterval(playback); }
-    function select(index) {
-      current = index;
-      for (const [i, li] of Array.from(items.children).entries()) {
-        li.firstChild.setAttribute("aria-current", i === current ? "step" : "false");
-      }
-      const selected = items.children[current].getBoundingClientRect();
-      const track = items.getBoundingClientRect();
-      items.scrollLeft += selected.left - track.left + (selected.width - track.width) / 2;
-      previous.disabled = current === 0;
-      next.disabled = current === steps.length - 1;
-      const step = steps[current];
-      const date = step.kind === "as_of_check" ? `到判断时点（${step.date}）做过期检查` : stamp(step.date, step.time);
-      const badges = el("div", null, "tags");
-      badges.append(state(step));
-      if (current === 0) badges.append(tag("首次判定"));
-      else if (step.state_changed) badges.append(tag("结论变了", "changed"));
-      if (step.order_unknown) badges.append(tag("同一天，先后未明", "warning"));
-      panel.replaceChildren(el("small", `第 ${current + 1} / ${steps.length} 步 · ${date}`), badges,
-        el("p", step.sentence, "replay-sentence"));
-      const added = list(step.added).map(card => el("p", `新增：《${card.title}》（${card.source_name} · ${card.tier_label}）`, "replay-added"));
-      panel.append(...added.slice(0, 3));
-      if (added.length > 3) panel.append(fold(`这一步还加入了 ${added.length - 3} 条`, ...added.slice(3)));
-      panel.append(el("p", step.reason === "none" ? step.reason_label : "原因：" + step.reason_label));
-      for (const card of list(step.newly_invalidated)) panel.append(el("p", `《${card.title}》→ ${card.status_label}（因为《${card.by_title}》）`));
-      if (next.disabled) stop();
-    }
-    const play = button("播放", () => {
-      stop();
-      select(0);
-      if (steps.length > 1) playback = setInterval(() => select(current + 1), 1600);
-    }, "primary");
-    const previous = button("上一步", () => { stop(); select(current - 1); });
-    const next = button("下一步", () => { stop(); select(current + 1); });
-    actions.append(play, previous, next);
-    const dateCounts = new Map();
-    for (const step of steps) dateCounts.set(step.date, (dateCounts.get(step.date) || 0) + 1);
-    steps.forEach((step, index) => {
-      const li = el("li");
-      const btn = button(null, () => { stop(); select(index); }, "track-step");
-      const date = step.kind === "as_of_check" ? "过期检查" :
-        stamp(monthDay(step.date), dateCounts.get(step.date) > 1 ? step.time : "");
-      btn.setAttribute("aria-label", UI.display(`第 ${index + 1} 步，${date}，${step.state_label}`));
-      const changed = index > 0 && step.state_changed;
-      const flag = index === 0 ? "首次判定" : changed ? "结论变了" : index === steps.length - 1 ? "现在" : "";
-      btn.append(el("i", null, ("dot " + UI.stateClass(step.state)).trim()), el("span", date, "track-date"),
-        el("span", flag, changed ? "track-flag changed" : "track-flag"));
-      if (step.order_unknown) btn.append(el("span", "先后未明", "track-flag warning"));
-      li.append(btn);
-      items.append(li);
-    });
-    area.append(actions, items, panel);
-    select(current);
-    appendEarliest();
+    area.hidden = !area.childElementCount;
   }
 
   function table(headers, rows) {
@@ -387,15 +292,12 @@
   }
 
   function cardQuotes(card) {
-    if (card.classified === false) return el("p", `未能自动归类：${card.unclassified_reason}。原文照常展示，这条不参与结论。`, "message error");
+    if (card.classified === false) return el("p", `未能自动归类：${card.unclassified_reason}。不参与结论。`, "message error");
     const body = el("div", null, "quotes");
     const badges = el("div", null, "tags");
     badges.append(nature(card), tag(card.stance_label));
     const quotes = el("div");
-    quotes.append(el("blockquote", card.quote));
-    for (const part of list(card.parts)) {
-      quotes.append(el("p", `${part.stance === "confirm" ? "确认" : "否认"}：${part.what} —「${part.quote}」`));
-    }
+    quotes.append(el("blockquote", card.quote), ...partQuotes(card));
     body.append(badges, protectedQuotes(card, quotes));
     return body;
   }
@@ -404,26 +306,60 @@
     return card.quote_folded ? fold("展开原句（第三方观点，非本产品判断）", content) : content;
   }
 
-  const hasCardWarning = article => Boolean(article.querySelector(".warning, .error"));
+  function partQuotes(card) {
+    return list(card.parts).map(part => el("p", `${part.stance === "confirm" ? "确认" : "否认"}：${part.what} —「${part.quote}」`));
+  }
 
-  function evidenceCard(card, isSynthetic, earliest, latest) {
-    const article = el("article", null, "evidence");
+  function warningLabels(card) {
+    const labels = [];
+    const voided = list(card.voided).length;
+    const copies = list(card.reposts).filter(copy => copy.voided_count > 0 || copy.repost_note).length;
+    if (voided) labels.push(`${voided} 项提取作废`);
+    if (card.direction_note) labels.push("方向核对未过");
+    if (card.title_check && !card.title_check.ok) labels.push("标题与判断不一致");
+    if (copies) labels.push(`转载 ${copies} 篇存疑`);
+    return labels;
+  }
+
+  function evidenceCard(card, isSynthetic, earliest) {
+    const article = fold(null);
+    const inactive = ["superseded", "corrected"].includes(card.status);
+    article.className = inactive ? "tl-item inactive" : "tl-item";
     article.id = "card-" + card.id;
     article.tabIndex = -1;
-    const inactive = ["superseded", "corrected"].includes(card.status);
-    if (inactive) article.classList.add("inactive");
+    const summary = article.firstChild;
+    const useSummary = ["company_notice", "regulator", "media"].includes(card.source_type) && !card.quote_folded && card.classified !== false;
+    const about = useSummary && card.doc_about || card.title;
+    // 公司公告的一句话摘要本身以公司名开头，前面就不再重复来源名
+    const text = el("span", String(about).startsWith(card.source_name) ? about : card.source_name + "：" + about, "tl-text");
+    if (card.third_party_note) text.append(tag(card.third_party_note));
+    summary.append(tag(card.source_type_label, "src"), text);
+    if (card.classified === false) {
+      summary.append(tag("未能自动归类", "warning"), el("small", card.unclassified_reason));
+    } else {
+      summary.append(nature(card));
+      const seen = new Set([card.nature]);
+      for (const claim of list(card.also)) {
+        if (claim.nature && claim.nature_label && !seen.has(claim.nature)) {
+          summary.append(nature(claim));
+          seen.add(claim.nature);
+        }
+      }
+    }
+    const statuses = {superseded: "已被取代", corrected: "已被更正", mention: "仅提及"};
+    if (card.status !== "effective") summary.append(tag(statuses[card.status] ?? card.status_label, "status"));
+    if (card.is_basis) summary.append(tag("结论依据", "basis"));
+    if (earliest) summary.append(tag("最早来源"));
+    summary.append(...warningLabels(card).map(label => tag(label, "warning")));
+    if (isSynthetic || card.synthetic) summary.append(synthetic());
     const badges = el("div", null, "ev-head");
     const weight = el("span", null, ("weight " + UI.tierClass(card.tier)).trim());
-    weight.setAttribute("aria-label", UI.display("证据分量：" + card.tier_label));
+    weight.setAttribute("aria-label", UI.display("来源权重：" + card.tier_label));
     weight.title = UI.display(card.tier_reason);
-    weight.append(el("i"), el("i"), el("i"), el("span", "分量" + card.tier_label));
-    badges.append(tag(card.source_type_label, "src"), el("strong", card.source_name), weight);
-    if (card.status !== "effective") badges.append(tag(card.status_label, "status"));
+    weight.append(el("i"), el("i"), el("i"), el("span", "权重" + card.tier_label));
+    badges.append(weight);
     if (card.stage) badges.append(tag("办理阶段：" + card.stage.label));
-    if (card.is_basis) badges.append(tag("结论依据", "basis"));
-    if (earliest) badges.append(tag("取到的最早一条"));
-    if (latest && !card.is_basis) badges.append(tag("最新一条"));
-    if (isSynthetic || card.synthetic) badges.append(synthetic());
+    if (inactive && card.invalidated_by_title) badges.append(el("small", "因为《" + card.invalidated_by_title + "》"));
     const title = el("h3");
     const link = sourceLink(card.title, card.url);
     title.append(link);
@@ -435,12 +371,12 @@
       article.append(line);
     }
     article.append(cardQuotes(card));
-    const details = fold("时间、数字和原文");
-    if (card.tier_reason) details.append(el("p", "分量依据：" + card.tier_reason));
-    details.append(el("p", `和这件事的关系：${card.relation_label || "未提供"}。${card.relation_reason || ""}`), cardTimes(card));
+    const details = fold("详情");
+    if (card.tier_reason) details.append(el("p", "权重依据：" + card.tier_reason));
+    details.append(el("p", `相关性：${card.relation_label || "未提供"}。${card.relation_reason || ""}`), cardTimes(card));
     const also = list(card.also);
     if (card.classified !== false && also.length) {
-      const summary = el("p", `同一篇里还有 ${also.length} 句：`);
+      const summary = el("p", `同篇其他说法 ${also.length} 句：`);
       const claims = el("div");
       for (const [index, item] of also.entries()) {
         if (index > 0) summary.append(el("span", "、"));
@@ -452,10 +388,10 @@
         claims.append(line);
       }
       article.append(summary);
-      details.append(el("h4", "同一篇里的其它说法"), protectedQuotes(card, claims));
+      details.append(el("h4", "同篇其他说法"), protectedQuotes(card, claims));
     }
     const numbers = list(card.numbers);
-    if (numbers.length) details.append(fold(`原文里的数字（${numbers.length} 个，均已核对出现在引句中）`,
+    if (numbers.length) details.append(fold(`原文数字 ${numbers.length} 个（均已核对）`,
       table(["数值", "单位", "指的是什么", "版本", "原句"], numbers.map(n => [n.value, n.unit, n.what, n.version, n.quote]))));
     if (card.direction_note) article.append(el("p", "方向核对：" + card.direction_note + "。", "warning"));
     if (card.title_check) {
@@ -465,13 +401,14 @@
     }
     const invalid = list(card.voided);
     if (invalid.length) {
-      const voided = fold(`有 ${invalid.length} 项 AI 提取的内容没通过原文核对，已作废`,
+      const voided = fold(`${invalid.length} 项提取未通过原文核对，已作废`,
         table(["字段", "内容", "原因"], invalid.map(v => [v.field, v.value, v.reason])));
       voided.firstChild.classList.add("warning");
       article.append(voided);
     }
     if (card.repost_count > 0) {
       const copies = el("ul");
+      const copyWarnings = [];
       for (const copy of list(card.reposts)) {
         const li = el("li");
         li.append(el("span", [copy.source_name, copy.tier_label, stamp(copy.publish_date, copy.publish_time)].join(" · ") + " "), sourceLink(copy.title, copy.url));
@@ -480,38 +417,23 @@
           const warning = el("small", `${copy.source_name}《${copy.title}》`, "warning");
           if (copy.voided_count > 0) warning.append(el("span", `有 ${copy.voided_count} 项 AI 提取未通过核对`));
           if (copy.repost_note) warning.append(el("span", copy.repost_note));
-          article.append(warning);
+          copyWarnings.push(warning);
         }
         copies.append(li);
       }
-      article.append(el("small", `另有 ${card.repost_count} 家转载或转述，不重复计数`));
+      // 转载里的警示：一两条直接列出；多了就合成一行（条数默认可见），点开看是哪几家。
+      if (copyWarnings.length <= 2) article.append(...copyWarnings);
+      else {
+        const box = fold(`转载 ${copyWarnings.length} 篇存在未通过核对项`, ...copyWarnings);
+        box.className = "copy-warnings";
+        box.firstChild.classList.add("warning");
+        article.append(box);
+      }
+      article.append(el("small", `转载 ${card.repost_count} 篇（不重复计）`));
       details.append(copies);
     }
-    details.append(fold("查看取到的原文片段" + (card.quote_folded ? "（含第三方观点）" : ""), el("div", card.text, "original")));
+    details.append(fold("原文片段" + (card.quote_folded ? "（含第三方观点）" : ""), el("div", card.text, "original")));
     article.append(details);
-    if (inactive) {
-      const cause = card.invalidated_by_title ? el("small", "因为《" + card.invalidated_by_title + "》") : null;
-      if (hasCardWarning(article)) {
-        if (cause) badges.append(cause);
-      } else {
-        const collapsed = fold(null);
-        collapsed.className = "ev-collapsed";
-        const summary = collapsed.firstChild;
-        summary.append(tag(card.source_type_label, "src"), nature(card));
-        const seen = new Set([card.nature_label]);
-        for (const item of also) {
-          if (item.nature_label && !seen.has(item.nature_label)) {
-            summary.append(nature(item));
-            seen.add(item.nature_label);
-          }
-        }
-        if (card.third_party_note) summary.append(tag(card.third_party_note));
-        summary.append(el("span", card.title, "ev-title"), tag(card.status_label, "status"));
-        if (cause) summary.append(cause);
-        collapsed.append(...article.children);
-        article.replaceChildren(collapsed);
-      }
-    }
     return article;
   }
 
@@ -535,73 +457,104 @@
     return tags;
   }
 
-  function evidenceMix(cards) {
-    const mix = el("p", `共 ${cards.length} 条：`, "evidence-mix");
-    const sources = new Map();
-    for (const card of cards) sources.set(card.source_type_label, (sources.get(card.source_type_label) || 0) + 1);
-    for (const [label, count] of [...sources].sort((a, b) => b[1] - a[1])) {
-      mix.append(tag(`${label} ${count}`, "src"));
+  function sources(data) {
+    const cards = list(data.cards);
+    const area = byId("sources");
+    const link = byId("all-sources");
+    link.textContent = `全部 ${cards.length} 篇`;
+    byId("sources-head").hidden = !cards.length;
+    if (!cards.length) {
+      area.replaceChildren(el("p", "未取到相关证据", "empty warning"));
+      return;
     }
-    mix.append(el("span", " 其中 "), ...natureTotals(cards));
-    return mix;
+    const groups = new Map();
+    for (const card of cards) {
+      if (!groups.has(card.source_type)) groups.set(card.source_type, []);
+      groups.get(card.source_type).push(card);
+    }
+    const bar = el("div", null, "src-bar");
+    const line = el("div", null, "src-line");
+    for (const group of groups.values()) {
+      const counts = new Map();
+      for (const card of group) counts.set(card.tier, (counts.get(card.tier) || 0) + 1);
+      const tierKey = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+      const sample = group.find(card => card.tier === tierKey);
+      if (!sample.source_type_label || !sample.tier_label) continue;
+      const segment = el("i", null, UI.tierClass(tierKey));
+      segment.setAttribute("style", `width: ${100 * group.length / cards.length}%`);
+      bar.append(segment);
+      const label = el("span");
+      label.append(el("strong", `${sample.source_type_label} ${group.length}`), el("small", "权重" + sample.tier_label));
+      line.append(label);
+    }
+    const copies = cards.reduce((sum, card) => sum + (card.repost_count || 0), 0);
+    if (copies) line.append(el("span", `转载 ${copies}（不重复计）`, "muted"));
+    if (!list(data.sources).some(source => source.ok === false)) {
+      const n = list(data.comparisons?.conflicts).filter(c => c.type !== "time_claims").length;
+      line.append(el("span", n ? `说法相反 ${n} 处` : "未见相反说法", n ? "warning" : "muted"));
+    }
+    const natures = el("div", "说法性质", "src-natures");
+    natures.append(...natureTotals(cards.filter(card => card.classified !== false)));
+    area.replaceChildren(bar, line, natures);
+    if (!sourceNoticeOnTop(data)) area.append(...sourceDetails(data));
   }
 
-  function appendDays(parent, cards, data, latest) {
-    const days = new Map();
-    let warnings = 0;
-    for (const card of cards) {
-      const date = card.publish_date || "";
-      if (!days.has(date)) {
-        const day = el("section", null, "day");
-        const heading = el("div", null, "day-date");
-        heading.append(el("strong", monthDay(date) || "日期未提供"), el("small", date.slice(0, 4)));
-        const items = el("div", null, "day-items");
-        day.append(heading, items);
-        parent.append(day);
-        days.set(date, items);
-      }
-      const article = evidenceCard(card, data.event.is_synthetic, card.id === data.earliest?.card_id, card === latest);
-      if (hasCardWarning(article)) warnings++;
-      days.get(date).append(article);
-    }
-    return warnings;
-  }
+  byId("all-sources").addEventListener("click", event => {
+    event.preventDefault();
+    for (const more of byId("timeline").querySelectorAll("details.tl-more")) more.open = true;
+    byId("sec-timeline").scrollIntoView({block: "start"});
+  });
 
   function timeline(data) {
     const area = byId("timeline");
-    const cards = list(data.cards);
-    byId("evidence-count").textContent = String(cards.length);
     area.replaceChildren();
-    if (cards.length) {
-      const newestFirst = [...cards].reverse();
-      const latest = newestFirst[0];
-      const keyCards = [];
-      const rest = [];
-      // 依据可能有很多张（例如“待证实”时每篇报道都是依据），重点里只放最新的两张，其余在下面展开。
-      let basisShown = 0;
-      for (const card of newestFirst) {
-        const basisKey = card.is_basis && basisShown < 2;
-        if (basisKey) basisShown++;
-        const key = cards.length <= 4 || basisKey || card.id === data.earliest?.card_id || card === latest;
-        (key ? keyCards : rest).push(card);
+    const days = new Map();
+    for (const card of [...list(data.cards)].reverse()) {
+      const date = card.publish_date || "";
+      if (!days.has(date)) days.set(date, []);
+      days.get(date).push(card);
+    }
+    if (!days.size) area.append(el("p", "未取到相关证据", "empty warning"));
+    const replay = list(data.replay);
+    const changes = replay.slice(1).filter(s => s.state_changed && s.from_state_short && s.state_short);
+    const unknownDates = new Set(replay.filter(s => s.order_unknown).map(s => s.date));
+    const earliest = data.earliest?.card_id;
+    const priority = c => Number(Boolean(c.is_basis || c.id === earliest));
+    for (const [date, cards] of days) {
+      const day = el("div", null, "tl-day");
+      const heading = el("div", null, "tl-date");
+      heading.append(el("strong", monthDay(date) || "日期未提供"), el("small", date.slice(0, 4)));
+      const body = el("div", null, "tl-body");
+      const transitions = changes.filter(s => s.date === date);
+      if (transitions.length || unknownDates.has(date)) {
+        const change = el("div", null, "tl-change");
+        for (const step of transitions) change.append(tag(step.from_state_short + " → " + step.state_short, "changed"));
+        if (unknownDates.has(date)) change.append(tag("同日先后未明", "warning"));
+        body.append(change);
       }
-      const keyGroup = el("div", null, "evidence-key");
-      appendDays(keyGroup, keyCards, data, latest);
-      area.append(evidenceMix(cards), keyGroup);
-      if (rest.length) {
-        const more = fold(null);
-        more.className = "more-evidence";
-        const warnings = appendDays(more, rest, data, latest);
-        const summary = more.firstChild;
-        summary.append(el("span", `展开其余 ${rest.length} 条证据`));
-        if (warnings) summary.append(tag(`其中 ${warnings} 条有未通过核对或需要留意的地方`, "warning"));
-        summary.append(...natureTotals(rest));
-        area.append(more);
+      const media = cards.filter(c => !["company_notice", "regulator"].includes(c.source_type));
+      const ranked = media.sort((a, b) => priority(b) - priority(a));
+      const rest = new Set(ranked.length > 3 ? ranked.slice(2) : []);
+      const renderCard = c => evidenceCard(c, data.event.is_synthetic, c.id === earliest && data.earliest.title === c.title);
+      for (const card of cards) {
+        if (!rest.has(card)) body.append(renderCard(card));
       }
-    } else area.append(el("p", "没有取到与这件事相关的证据。", "empty warning"));
+      if (rest.size) {
+        const remaining = cards.filter(c => rest.has(c));
+        const more = fold(`其余 ${rest.size} 篇`);
+        more.className = "tl-more";
+        more.firstChild.append(...natureTotals(remaining));
+        const warned = remaining.filter(c => c.classified === false || warningLabels(c).length).length;
+        if (warned) more.firstChild.append(tag(`${warned} 篇需留意`, "warning"));
+        more.append(...remaining.map(renderCard));
+        body.append(more);
+      }
+      day.append(heading, body);
+      area.append(day);
+    }
     const relayed = list(data.relayed_claims);
     if (relayed.length) {
-      area.append(el("h3", "被转述的说法"), el("p", "这些说法是在公告或报道里被别人转述的，原帖没有取到，所以不排进上面的时间线。", "muted"));
+      area.append(el("h3", "转述的说法"), el("p", "原帖未取到，不计入时间线", "muted"));
       for (const item of relayed) {
         const box = el("div", null, "sub-card");
         const claim = el("p", "被提到的说法：" + item.text);
@@ -614,7 +567,6 @@
     const excludedItems = list(data.excluded);
     if (!excludedItems.length) return;
     const excluded = el("div");
-    excluded.append(el("p", "数据源每次都会返回一些和这件事无关的内容，它们不进时间线。", "muted"));
     for (const item of excludedItems) {
       const row = el("div", null, "sub-card");
       row.append(sourceLink(item.title, item.url), el("small", item.source_name + " · " + item.publish_date),
@@ -622,7 +574,7 @@
       if (item.relation_by === "rule") row.append(el("small", "（程序按规则判定）"));
       excluded.append(row);
     }
-    area.append(fold(`已排除 ${excludedItems.length} 条（和这件事无关）`, excluded));
+    area.append(fold(`已排除 ${excludedItems.length} 条`, excluded));
   }
 
   function comparisons(data) {
@@ -630,9 +582,9 @@
     const cards = new Map(list(data.cards).map(card => [card.id, card]));
     const conflicts = list(data.comparisons?.conflicts);
     const numbers = list(data.comparisons?.numbers);
-    byId("metric-note").hidden = numbers.length === 0;
+    const conflictsArea = byId("conflicts");
+    conflictsArea.replaceChildren();
     area.replaceChildren();
-    const warned = list(data.warnings).length > 0;
     const timeClaims = [];
     for (const conflict of conflicts) {
       if (conflict.type === "time_claims") {
@@ -648,21 +600,28 @@
       const sides = el("div", null, "side-grid");
       for (const side of list(conflict.sides)) {
         const column = el("div", null, "side");
-        column.append(el("h3", side.label));
+        // 两栏标题换成短说法；认不出的照接口原文
+        column.append(el("h3", ({"说属实或给出了版本": "称属实", "说不属实": "称不属实"})[side.label] ?? side.label));
         for (const item of list(side.cards)) {
           const card = cards.get(item.card_id);
           column.append(el("small", item.source_name + " · " + item.publish_date),
-            jump(item.card_id, item.title), el("blockquote", item.quote),
-            tier(item.tier, item.tier_label ?? card?.tier_label));
+            jump(item.card_id, item.title), protectedQuotes(card ?? {}, el("blockquote", item.quote)));
+          if (card?.quote_folded && card.third_party_note) column.append(tag(card.third_party_note));
+          column.append(tier(item.tier, "权重" + (item.tier_label ?? card?.tier_label ?? "")));
         }
         sides.append(column);
       }
       block.append(sides, el("p", "目前以谁为准：" + conflict.ruling), el("small", conflict.rule));
-      area.append(block);
+      conflictsArea.append(block);
     }
-    area.append(...timeClaims);
-    if (warned) {
-      for (const label of list(data.warning_labels)) area.append(el("p", label, "message warning"));
+    byId("conflicts-title").textContent = conflictsArea.childElementCount ? "说法相反" : "提示";
+    for (const label of list(data.warning_labels)) conflictsArea.append(el("p", label, "message warning"));
+    byId("sec-conflicts").hidden = !conflictsArea.childElementCount;
+    for (const change of list(data.brief?.changes)) {
+      const row = el("div", null, "change-row");
+      row.append(el("span", change.name, "change-name"), el("strong", `${change.before} → ${change.after} ${change.unit}`),
+        el("small", `${monthDay(change.before_date)} → ${monthDay(change.after_date)}`));
+      area.append(row);
     }
     const changed = [];
     const unchanged = [];
@@ -670,7 +629,7 @@
       const block = fold(null);
       block.className = "metric";
       const summary = block.firstChild;
-      const rows = list(metric.rows);
+      const rows = list(metric.rows).filter(Boolean);
       const values = rows.map(row => UI.display([row.value, row.unit].join("")));
       const publicValues = values.filter((_, i) => !cards.get(rows[i].card_id)?.quote_folded);
       let valueText = [...new Set(publicValues)].join("、");
@@ -688,16 +647,28 @@
       if (changing) changed.push(block);
       else unchanged.push(block);
     }
-    area.append(...changed, ...unchanged);
-    if (!warned && !numbers.length && !conflicts.length) area.append(el("p", "没有发现互相矛盾的说法，也没有前后变化的数字。", "empty"));
+    if (numbers.length) area.append(fold(`全部数字 ${numbers.length} 项`, ...changed, ...unchanged));
+    if (timeClaims.length) area.append(fold(`发布时间记载不一 ${timeClaims.length} 篇`, ...timeClaims));
+    byId("sec-numbers").hidden = !area.childElementCount;
   }
 
   function relations(data) {
-    byId("watch-note").replaceChildren(el("span", data.watchlist_note));
     const area = byId("relations");
-    area.replaceChildren();
+    const rows = list(data.relations).filter(row => row?.stock && (data.event.is_synthetic || !row.stock.synthetic));
+    const labels = {party: "当事公司", mentioned: "被原文提到", same_industry: "同行业"};
+    const related = rows.filter(row => list(row.kinds).length).map(row => {
+      const kinds = row.kinds.map(kind => labels[kind.type]).filter(Boolean);
+      return `${row.stock.name}（${kinds.join("、")}）`;
+    });
+    const incomplete = list(data.sources).some(s => s.ok === false) ? "（来源不完整）" : "";
+    area.replaceChildren(el("p", "关联自选：" + (related.join("、") || "未发现") + incomplete, "rel-line"));
+    for (const row of rows.filter(row => row.industry_unknown)) {
+      area.append(el("p", company(row.stock) + "：行业分类未取到，行业关系未判断", "warning"));
+    }
+    const details = fold("自选股明细", el("p", data.watchlist_note, "muted"));
+    area.append(details);
     const rest = [];
-    for (const row of visibleRelations(data)) {
+    for (const row of rows) {
       const kinds = list(row.kinds);
       if (!kinds.length && !row.industry_unknown) {
         rest.push(row.stock);
@@ -717,7 +688,7 @@
         info.append(detail);
       }
       line.append(stock, info);
-      area.append(line);
+      details.append(line);
     }
     if (rest.length) {
       const line = el("p", `另有 ${rest.length} 只在已取到的证据中未发现直接关系：`, "relation-rest muted");
@@ -725,12 +696,11 @@
         line.append(el("span", (index ? "、" : "") + company(stock)));
         if (stock.synthetic) line.append(synthetic());
       });
-      area.append(line);
+      details.append(line);
     }
   }
 
   async function load() {
-    clearInterval(playback);
     const request = ++version;
     const status = byId("load-status");
     status.hidden = false;
@@ -752,8 +722,8 @@
       overview(data);
       controls(data);
       conclusion(data);
-      keyfacts(data);
-      resultFoot(data);
+      keyfacts(data.brief);
+      sources(data);
       timeline(data);
       comparisons(data);
       relations(data);
@@ -761,16 +731,13 @@
       status.replaceChildren();
       status.hidden = true;
       byId("event-content").hidden = false;
-      replay(list(data.replay), data.earliest);
     } catch (error) {
       if (request !== version) return;
-      clearInterval(playback);
       byId("event-content").hidden = true;
       status.hidden = false;
       message(status, error.status === 404 ? "没有找到这件事。" : error.message, true);
       if (error.status !== 404) status.append(button("重试", load));
     }
   }
-  window.addEventListener("pagehide", () => clearInterval(playback));
   load();
 })();

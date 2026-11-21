@@ -25,17 +25,17 @@
       const meta = await api("/api/meta");
       const limits = meta.limits;
       if (!Number.isInteger(limits?.quota_left)) throw new Error("服务返回的数据格式有误，请重试。");
-      byId("quota").replaceChildren(el("span", `今日剩余查询次数：${limits.quota_left}`));
+      byId("quota").replaceChildren(el("span", `今日剩余 ${limits.quota_left} 次`));
       const stocks = list(meta.watchlist);
       byId("watchlist").replaceChildren(...stocks.filter(stock => !stock.synthetic).map(stock => tag(company(stock), "stock")));
       const fictional = stocks.filter(stock => stock.synthetic).map(company);
       const examples = byId("synthetic-stocks");
       examples.hidden = !fictional.length;
-      examples.textContent = fictional.length ? UI.display("示例里用到的虚构股票：" + fictional.join("、")) : "";
+      examples.textContent = fictional.length ? UI.display("虚构股票：" + fictional.join("、")) : "";
       const names = group => list(group).map(item => item.name ?? item).join("、");
       byId("rules").replaceChildren(lines(meta.rules_text), el("h3", "名单内财经媒体"),
         el("p", names(meta.media_whitelist)), el("h3", "个人或自媒体平台"), el("p", names(meta.low_platforms)),
-        el("p", "不在名单内的来源一律按“低”处理。30 天的过期期限是本产品自己定的假设值。", "muted"),
+        el("p", "名单外来源按“低”处理。过期期限 30 天为产品设定。", "muted"),
         el("p", `每天上限 ${limits.daily_query_limit} 次`, "muted"));
     } catch (error) {
       for (const id of ["quota", "watchlist", "rules"]) message(byId(id), error.message, true);
@@ -49,17 +49,17 @@
     const head = el("div", null, "entry-top");
     if (item.is_synthetic) head.append(synthetic());
     else head.append(el("small", company(item.company)));
-    link.append(head, el("h3", item.title), state(item), el("p", item.sentence));
-    link.append(el("small", item.refreshed_at ? "数据取于 " + UI.when(item.refreshed_at) + "（北京时间）" : "未提供取数时间", item.refreshed_at ? "entry-date" : "entry-date warning"));
+    link.append(head, el("h3", item.title), state(item), el("p", UI.brief(item.sentence)));
+    link.append(el("small", item.refreshed_at ? "更新 " + UI.when(item.refreshed_at).slice(5, 16) : "未提供取数时间", item.refreshed_at ? "entry-date" : "entry-date warning"));
     return link;
   }
 
   const demoDescriptions = new Map([
-    ["demo-conflict", "公司说已拿到许可证，发证机构说还没核发。"],
-    ["demo-correction", "公司先发公告，后来又发了更正公告。"],
-    ["demo-expiry", "一条传闻超过 30 天没人证实也没人否认。可切换第 29、30、31 天。"],
-    ["demo-inquiry", "交易所先发函问询，公司随后否认。"],
-    ["demo-mixed", "同一条消息，公司只确认了一部分。"],
+    ["demo-conflict", "公司公告与监管通报说法相反"],
+    ["demo-correction", "公司发布更正公告"],
+    ["demo-expiry", "传闻超过 30 天无人证实"],
+    ["demo-inquiry", "交易所问询后公司否认"],
+    ["demo-mixed", "公司部分确认、部分否认"],
   ]);
   function demoRow(item) {
     const link = el("a", null, "demo-row");
@@ -135,12 +135,12 @@
 
   function confirmMatch(payload, data) {
     const item = data.candidate;
-    const box = message(feedback, "你查的可能是这件已有的事：");
+    const box = message(feedback, "已有相近事件：");
     box.append(el("h3", item.title), state(item), el("p", item.sentence), el("p", data.reason, "muted"));
     if (item.is_synthetic) box.append(synthetic());
     const actions = el("div", null, "actions");
-    actions.append(button("是同一件事，打开它并刷新", () => submit({...payload, decision: "same", match_id: item.id}), "primary"),
-      button("不是，当成新的一件事来查", () => submit({...payload, decision: "new"})));
+    actions.append(button("打开并刷新", () => submit({...payload, decision: "same", match_id: item.id}), "primary"),
+      button("作为新事件查询", () => submit({...payload, decision: "new"})));
     box.append(actions);
   }
 
@@ -174,13 +174,13 @@
   byId("query-form").addEventListener("submit", event => {
     event.preventDefault();
     if (!chosen) {
-      message(feedback, "请先从候选里点选一家公司，避免重名。", true);
+      message(feedback, "请从候选中选择公司", true);
       input.focus();
       return;
     }
     const topic = byId("topic").value.trim();
     if (!topic) {
-      message(feedback, "请填写要查的事件。", true);
+      message(feedback, "请填写事件关键词", true);
       byId("topic").focus();
       return;
     }

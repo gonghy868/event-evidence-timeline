@@ -151,19 +151,18 @@ def test_stage_in_page_and_masked_in_view():
     assert stage == v["cards"][0]["stage"] and "77元" not in str(stage)
     assert "77元" in str(card["stage"])
     page = render(v)
-    assert "办理阶段：" + LABELS["board_pending"] in page["timeline"]["visible"]
-    verdict = dom(page["result"]).find("div[@class='verdict']")
-    badges, body = list(verdict)
-    assert badges.get("class") == "verdict-badges" and "large" in badges[0].get("class").split()
-    assert badges.findtext("span[@class='tag stage-badge']") == LABELS["board_pending"]
-    assert LABELS["board_pending"] in page["result"]["visible"] and body.find("p[@class='stage']") is None
-    assert "77元" not in page["result"]["full"]
-    details = dom(page["result"]).find(".//details[@class='stage-quotes']")
-    assert details.get("open") is None
-    assert [q.text for q in details.findall("blockquote")] == stage["quotes"]
-    assert f"查看这一步的原文依据（{len(stage['quotes'])} 句）" in page["result"]["visible"]
-    assert details[-1].tag == "small" and details[-1].text == "由程序按公告里的固定措辞识别，不是 AI 判断。"
-    assert details[-1].text not in page["result"]["visible"]
+    assert "办理阶段：" + LABELS["board_pending"] in page["timeline"]["bodyText"]
+    head = dom(page["result"]).find("div[@class='verdict-head']")
+    assert "large" in head[0].get("class").split() and head.findtext("span[@class='stage-short']") == "待股东会审议"
+    assert "77元" not in page["basis"]["full"] and "77元" not in page["result"]["full"]
+    quotes = dom(page["basis"]).findall("div[@class='cite secondary']")
+    assert v["cards"][0]["quote_folded"]
+    assert [q.findtext("details/blockquote") for q in quotes] == stage["quotes"]
+    assert all(q.findtext("details/summary") == "展开原句（第三方观点，非本产品判断）" for q in quotes)
+    assert all(text not in page["basis"]["visible"] for text in stage["quotes"])
+    for i, q in enumerate(quotes, 1):
+        assert q.findtext("small") == f"[{i}] 办理阶段依据（程序按固定措辞识别）"
+    assert [a.text for a in dom(page["result"]).findall(".//a[@class='ref']")] == [f"[{i}]" for i in range(1, len(quotes)+1)]
 
 
 @pytest.mark.parametrize("conflict", [False, True])
@@ -177,8 +176,7 @@ def test_media_basis_change_in_replay(conflict):
     last = v["replay"][-1]
     assert last["reason"] == "none" and last["reason_label"] == "结论未变"
     assert v["last_change"]["step_index"] == 1
-    shown = render(v)["replay"]["visible"]
-    assert "结论未变" in shown and "原因：结论未变" not in shown
+    assert dom(render(v)["timeline"]).find(".//div[@class='tl-change']/span[@class='tag changed']") is None
 
 
 @pytest.mark.parametrize("kind", ["media", "broker_report", "web_post", "company_notice", "regulator"])
@@ -197,7 +195,9 @@ def test_source_updates_and_status_in_three_places(kind):
     assert v["cards"][0]["status_label"] == v["replay"][-1]["newly_invalidated"][0]["status_label"] == label
     assert v["comparisons"]["numbers"][0]["rows"][0]["status_label"] == label
     page = render(v)
-    assert all(label in page[area]["full"] for area in ("timeline", "replay", "comparisons"))
+    assert label in page["comparisons"]["full"]
+    status = v["cards"][0]["status"]
+    assert {"superseded": "已被取代", "corrected": "已被更正"}[status] in page["timeline"]["visible"]
 
 
 OTHERS = ["甲科技", "乙股份", "丙实业", "丁集团"]
@@ -248,7 +248,7 @@ def test_related_label_and_internal_relation(relation):
     public, = v["cards"]
     assert (public["relation"], public["relation_label"]) == ("related", "相关")
     text = render(v)["timeline"]["full"]
-    assert "和这件事的关系：相关。公告说明了金额" in text
+    assert "相关性：相关。公告说明了金额" in text
     assert "同一次发生" not in text and "后续进展" not in text
 
 
