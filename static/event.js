@@ -287,7 +287,8 @@
     }
     if (card.self_published) published.append(el("small", "原文自述：" + card.self_published.text));
     column("取数时间").append(el("span", timeText(UI.when(card.fetched_at))));
-    column("更新时间").append(el("span", timeText(card.updated_at_text)));
+    // 来源不给更新时间时写明，不用“—”带过。
+    column("更新时间").append(el("span", card.updated_at_text || "来源未提供"));
     return row;
   }
 

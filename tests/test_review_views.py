@@ -255,7 +255,8 @@ def test_evidence_and_report_detail_visibility():
     assert "1 项提取未通过原文核对，已作废" in timeline["bodyText"]
     for text in ("相关性：", "发生时间", "发布时间（披露）", "取数时间", "更新时间", "同篇其他说法", "原文片段"):
         assert text not in timeline["visible"] and text in timeline["cardDetails"]
-    assert timeline["cardDetails"].count("—") >= 2
+    # 发生时间没有时仍是“—”；更新时间来源不给时写明“来源未提供”。
+    assert timeline["cardDetails"].count("—") >= 1 and "来源未提供" in timeline["cardDetails"]
     for mode in ("visible", "cardDetails"):
         assert "建议投资者买入" not in timeline[mode] and "1,200元" not in timeline[mode]
     assert "建议投资者买入" not in timeline["full"] and "1,200元" not in timeline["full"]
@@ -499,8 +500,35 @@ def test_home_demo_rows_and_regular_entries():
         assert entry.get("href") == row.get("href") and entry.findtext("p") == "当前结论"
         assert "→" not in page[key]["visible"] and "未提供取数时间" in page[key]["visible"]
         assert "公司已确认" in page[key]["visible"] and "已获正式确认" not in page[key]["full"]
-    item["refreshed_at"] = "2026-10-24T04:30:00Z"
-    assert "更新 10-24 12:30" in render(listing, home=True)["examples"]["visible"]
+    # 首页卡片的“更新”用取数时间；只有重算时间（refreshed_at）时不冒充取数时间。
+    item["refreshed_at"] = "2026-10-25T04:30:00Z"
+    assert "未提供取数时间" in render(listing, home=True)["examples"]["visible"]
+    item["fetched_at"] = "2026-10-24T04:30:00Z"
+    dated = render(listing, home=True)["examples"]["visible"]
+    assert "更新 10-24 12:30" in dated and "10-25" not in dated
+
+
+def test_summary_fetch_time_matches_event_page():
+    """首页摘要给出的取数时间是各来源里最晚的一次，和重算时间无关；没有成功取数时为空。"""
+    sources = {"notice": dict(ok=True, last_success_at="2026-10-20T02:01:00-08:00"),
+               "news": dict(ok=True, last_success_at="2026-10-20T19:02:10+08:00"),
+               "fuyao_news": dict(ok=False)}
+    item = event(cards=[], sources=sources)
+    item["refreshed_at"] = "2026-10-21T05:21:43+08:00"
+    summary = views.event_summary(item, NOW)
+    assert summary["fetched_at"] == "2026-10-20T19:02:10+08:00" and summary["refreshed_at"] == item["refreshed_at"]
+    rows = views.event_view(item, NOW)["sources"]
+    assert summary["fetched_at"] in [row["last_success_at"] for row in rows]
+    assert views.event_summary(event(cards=[], sources={"notice": dict(ok=False)}), NOW)["fetched_at"] is None
+
+
+def test_quoted_rating_words_are_masked():
+    """研报标题里带引号的评级写法（“买入”评级）也要遮住。"""
+    item = dict(id="e", title="中邮证券给予甲公司“买入”评级", company=dict(name="甲"), state="unverified",
+                state_label="待证实", state_short="待证实", sentence='维持"增持"评级')
+    page = render(dict(examples=[item], queries=[], scenarios=[]), home=True)["examples"]
+    assert "买入" not in page["full"] and "增持" not in page["full"]
+    assert "中邮证券给予甲公司〔评价用语已隐去〕" in page["full"]
 
 
 def test_home_query_extras_order_and_rule_copy():

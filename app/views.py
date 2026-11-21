@@ -1,6 +1,6 @@
 """读取事件时，用同一份证据与判断时点生成页面视图。"""
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import brief, compare, config, guard, labels, rules, store
 from .ifind import beijing
@@ -135,13 +135,28 @@ def _context(event, now, as_of=None, stale_source=False):
             "hints": event.get("hints", []), "sources": sources}, rows
 
 
+def _latest_fetch(rows):
+    """各来源最近一次成功取数里最晚的那个。首页卡片的“更新”和事件页顶部用同一个时间。"""
+    best = None
+    for row in rows:
+        last = row.get("last_success_at")
+        if not last:
+            continue
+        dt = datetime.fromisoformat(last)
+        if not dt.tzinfo:
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        if best is None or dt > best[0]:
+            best = (dt, last)
+    return best[1] if best else None
+
+
 def event_summary(event, now):
-    ctx, _ = _context(event, now)
+    ctx, rows = _context(event, now)
     cards = [_display_card(c) for c in _visible_cards(event, event.get("as_of"))]
     result = rules.evaluate(cards, ctx)
     first = next((c for c in cards if result["basis"] and c["id"] == result["basis"][0]), {})
     fields = _fields(_event_info(event), "id title company topic is_example is_synthetic demonstrates refreshed_at")
-    return {**fields, "state": result["state"], "state_label": labels.STATE_LABELS[result["state"]],
+    return {**fields, "fetched_at": _latest_fetch(rows), "state": result["state"], "state_label": labels.STATE_LABELS[result["state"]],
             "state_short": brief.state_short(result["state"], brief.basis_who(first)), "sentence": result["sentence"], "cards_total": len(cards)}
 
 

@@ -50,7 +50,8 @@
     if (item.is_synthetic) head.append(synthetic());
     else head.append(el("small", company(item.company)));
     link.append(head, el("h3", item.title), state(item), el("p", UI.brief(item.sentence)));
-    link.append(el("small", item.refreshed_at ? "更新 " + UI.when(item.refreshed_at).slice(5, 16) : "未提供取数时间", item.refreshed_at ? "entry-date" : "entry-date warning"));
+    // 和事件页顶部同一个口径：各来源最近一次成功取数的时间，不是事件最近一次重算的时间。
+    link.append(el("small", item.fetched_at ? "更新 " + UI.when(item.fetched_at).slice(5, 16) : "未提供取数时间", item.fetched_at ? "entry-date" : "entry-date warning"));
     return link;
   }
 

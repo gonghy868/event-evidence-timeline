@@ -7,7 +7,7 @@ const UI = (() => {
   function display(value) {
     const raw = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
     // 即使第三方原文里带有评价词，也不给这些词增加页面曝光。
-    return raw.replace(/(?:建议|(?:强烈)?推荐)[^\p{P}\r\n]{0,8}?(?:买入|卖出|增持|减持|加仓|减仓)|(?:买入|卖出|增持|减持)评级|强烈推荐|必涨|必跌|稳赚/gu, "〔评价用语已隐去〕");
+    return raw.replace(/(?:建议|(?:强烈)?推荐)[^\p{P}\r\n]{0,8}?(?:买入|卖出|增持|减持|加仓|减仓)|[“"‘'「『]?(?:买入|卖出|增持|减持)[”"’'」』]?评级|强烈推荐|必涨|必跌|稳赚/gu, "〔评价用语已隐去〕");
   }
 
   function el(tag, value, className) {
