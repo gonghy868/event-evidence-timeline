@@ -265,6 +265,35 @@
     return box;
   }
 
+  // 作废项给人看：内部字段名换成中文，原始数据拆成“内容，引句：……”，不把花括号和英文键名直接摆出来。
+  const voidedFields = {
+    numbers: "数字", "numbers.unit": "数字的单位", event_dates: "发生日期", "event_dates.year": "发生日期的年份",
+    companies: "提到的公司", origin: "最初出处", self_published: "原文自述的发布时间", relayed_claim: "被转述的说法",
+    quote: "依据原句", claim_quote: "点名这个说法的原句", stance: "态度", revision: "是否更正", parts: "分项",
+    also: "同篇其他说法", summary: "摘要", read: "AI 读取结果", judge: "AI 关系判断",
+  };
+  const voidedWords = {
+    confirm: "确认", deny: "否认", new_version: "给出新版本", mixed: "部分确认部分否认", mention: "只是提到或问询",
+    correction: "更正", update: "更新", none: "无", fact: "事实陈述", opinion: "观点", speculation: "推测", rumor: "传闻",
+  };
+  function voidedField(name) {
+    const text = String(name ?? "");
+    return voidedFields[text] ?? voidedFields[text.split(".")[0]] ?? (/[a-z]/i.test(text) || !text ? "其他" : text);
+  }
+  function voidedValue(value) {
+    if (value == null || value === "") return "AI 未给出";
+    if (Array.isArray(value)) return value.map(voidedValue).join("；") || "AI 未给出";
+    if (typeof value !== "object") return voidedWords[value] ?? String(value);
+    const parts = [];
+    if (value.value != null && value.value !== "") parts.push([value.value, value.unit].filter(Boolean).join(" "));
+    for (const [key, item] of Object.entries(value)) {
+      if (["quote", "type", "version", "value", "unit"].includes(key) || item == null || item === "") continue;
+      parts.push(typeof item === "object" ? voidedValue(item) : voidedWords[item] ?? String(item));
+    }
+    if (value.quote) parts.push("引句：" + value.quote);
+    return parts.join("，") || "AI 未给出";
+  }
+
   function cardTimes(card) {
     const row = el("div", null, "times");
     const timeText = value => !value || value === "来源未提供" || value === "未提及" ? "—" : value;
@@ -403,7 +432,7 @@
     const invalid = list(card.voided);
     if (invalid.length) {
       const voided = fold(`${invalid.length} 项提取未通过原文核对，已作废`,
-        table(["字段", "内容", "原因"], invalid.map(v => [v.field, v.value, v.reason])));
+        table(["项目", "AI 给出的内容", "原因"], invalid.map(v => [voidedField(v.field), voidedValue(v.value), v.reason])));
       voided.firstChild.classList.add("warning");
       article.append(voided);
     }

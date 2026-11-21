@@ -522,6 +522,34 @@ def test_summary_fetch_time_matches_event_page():
     assert views.event_summary(event(cards=[], sources={"notice": dict(ok=False)}), NOW)["fetched_at"] is None
 
 
+def test_voided_table_uses_plain_words():
+    """作废项表格不露内部字段名和原始数据格式。"""
+    voided = [
+        dict(field="companies", value=dict(name="光迅科技", quote="光迅科技：关于生产经营情况的公告"), reason="引句在原文里找不到"),
+        dict(field="numbers", value=dict(value="63.78", unit="元/股", what="回购价格上限", version=None, quote="不超过63.78元/股"), reason="数字未在引句中找到"),
+        dict(field="numbers.unit", value="亿元", reason="单位在引句里找不到，已去掉"),
+        dict(field="stance", value="confirm", reason="按只是提到处理"),
+        dict(field="judge", value=None, reason="AI 没有给出有效的关系判断"),
+        dict(field="summary.extra", value=dict(type="self", text="摘要"), reason="这一项应为文字"),
+        dict(field="数量", value="7", reason="原文未提及"),
+    ]
+    full = render(views.event_view(event(cards=[card("a", voided=voided)]), NOW))["timeline"]["full"]
+    table = dom(render(views.event_view(event(cards=[card("a", voided=voided)]), NOW))["timeline"]).find(".//table")
+    assert [th.text for th in table.iter("th")] == ["项目", "AI 给出的内容", "原因"]
+    rows = [[td.text for td in tr.iter("td")] for tr in table.iter("tr")][1:]
+    assert [row[:2] for row in rows] == [
+        ["提到的公司", "光迅科技，引句：光迅科技：关于生产经营情况的公告"],
+        ["数字", "63.78 元/股，回购价格上限，引句：不超过63.78元/股"],
+        ["数字的单位", "亿元"],
+        ["态度", "确认"],
+        ["AI 关系判断", "AI 未给出"],
+        ["摘要", "摘要"],
+        ["数量", "7"],
+    ]
+    for raw in ("companies", "numbers", "stance", "judge", '{"', '"name"', '"quote"', "confirm", "null"):
+        assert raw not in full
+
+
 def test_quoted_rating_words_are_masked():
     """研报标题里带引号的评级写法（“买入”评级）也要遮住。"""
     item = dict(id="e", title="中邮证券给予甲公司“买入”评级", company=dict(name="甲"), state="unverified",
