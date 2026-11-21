@@ -229,7 +229,7 @@
       if (error || !Array.isArray(meta.rules_text)) {
         details.hidden = true;
         message(errorArea, error?.message || "服务没有返回判断规则。", true);
-      } else rules.replaceChildren(lines(meta.rules_text));
+      } else rules.replaceChildren(...UI.ruleSummary(meta.limits?.expire_days, lines(meta.rules_text)));
     });
   }
 

@@ -482,6 +482,18 @@ def test_home_demo_rows_and_regular_entries():
         ("demo-title", "案例"), ("tag state-confirmed", "公司已确认"), ("demo-what", "规则说明"), ("tag synthetic", "构造数据")]
     assert "今日剩余 3 次" in page["quota"]["visible"]
     assert "名单外来源按“低”处理。过期期限 30 天为产品设定。" in page["rules"]["full"]
+    # 短话默认可见；规则原文和名单收在“完整规则”折叠里。
+    brief, full = list(dom(page["rules"]))
+    assert brief.tag == "ul" and brief.get("class") == "rule-brief"
+    assert [row.findtext("strong") for row in brief] == ["分工", "来源权重", "结论", "说法相反、暂无结论", "失效"]
+    assert brief[1].findtext("span") == "公司公告、监管文件为高；名单内财经媒体、券商研报为中；其余为低"
+    assert full.tag == "details" and full.get("class") == "rule-full" and full.findtext("summary") == "完整规则"
+    assert [n.text for n in full.findall("h3")] == ["名单内财经媒体", "个人或自媒体平台"]
+    assert "分工" in page["rules"]["visible"] and "个人或自媒体平台" not in page["rules"]["visible"]
+    meta["limits"]["expire_days"] = 30
+    dated = dom(render(listing, home=True, meta=meta)["rules"])[0]
+    assert dated[-1].findtext("strong") == "过期"
+    assert dated[-1].findtext("span") == "没有公司公告或监管文件的消息，30 天无新增独立材料，标为已过期"
     for key in ("examples", "queries"):
         entry = dom(page[key]).find("a[@class='entry']")
         assert entry.get("href") == row.get("href") and entry.findtext("p") == "当前结论"
@@ -536,7 +548,8 @@ def test_home_query_extras_order_and_rule_copy():
     assert checkbox.tail == "模拟公告获取失败" and checkbox.get("aria-describedby") == "simulate-help"
     assert extras.findtext(".//small[@id='simulate-help']") == "下一次查询生效"
     assert rules.tag == "details" and rules.findtext("summary") == "判断规则"
-    assert rules.find("dl") is None and rules.findtext("p") == "AI 仅读取原文并给出依据原句；程序核对引句是否存在于原文，未通过的作废。来源权重、结论、变化原因均按固定规则计算。"
+    assert rules.find("dl") is None and rules.find("p") is None
+    assert rules.findtext("div[@id='rules']") == "正在读取规则…"
 
 
 @pytest.mark.parametrize("clicks,on", [([], False), (["simulate"], True),
@@ -611,6 +624,10 @@ def test_rule_number_and_failure():
     assert rule.findtext("small") == "规则判定，AI 仅读取原文" and rule.findtext("details/summary") == "判定依据"
     hit = f"判断时点 2026-10-24 12:30（北京时间），命中规则第 {view['result']['rule_no']} 条"
     assert rule.findtext("details/p") == hit and hit not in result["visible"] and "测试规则" in result["full"]
+    # 展开“判定依据”先是短话，规则原文在下一层“完整规则”里。
+    brief, full = list(rule.find("details/div"))
+    assert brief.get("class") == "rule-brief" and brief[0].findtext("strong") == "分工"
+    assert full.findtext("summary") == "完整规则" and full.findtext("ul/li") == "测试规则"
     failed = render(view, meta={})["result"]
     assert "服务没有返回判断规则。" in failed["visible"] and hit not in failed["visible"]
 

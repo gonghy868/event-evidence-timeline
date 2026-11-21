@@ -36,6 +36,30 @@ const UI = (() => {
     return ul;
   }
 
+  // 判断规则的短版。每句都对着 /api/meta 的 rules_text 核对过；改规则原文时这里一并改。
+  const RULE_BRIEF = [
+    ["分工", "AI 只读原文并摘出依据原句，对不上原文的引句作废；结论由固定规则计算"],
+    ["来源权重", "公司公告、监管文件为高；名单内财经媒体、券商研报为中；其余为低"],
+    ["结论", "以最新的公司公告或监管文件为准，分为已确认、已否认、部分确认部分否认；没有则为待证实"],
+    ["说法相反、暂无结论", "有效材料正反并存为说法相反；公告检索失败或没有相关证据为暂无结论"],
+    ["失效", "同一来源发布更正，或公司、监管文件出新版本后，旧材料失效"],
+  ];
+  // 短版在前，规则原文收进“完整规则”折叠。过期天数取不到时不写过期那一句。
+  function ruleSummary(expireDays, ...full) {
+    const brief = el("ul", null, "rule-brief");
+    const rows = Number.isInteger(expireDays)
+      ? [...RULE_BRIEF, ["过期", `没有公司公告或监管文件的消息，${expireDays} 天无新增独立材料，标为已过期`]]
+      : RULE_BRIEF;
+    for (const [label, text] of rows) {
+      const row = el("li");
+      row.append(el("strong", label), el("span", text));
+      brief.append(row);
+    }
+    const details = fold("完整规则", ...full);
+    details.className = "rule-full";
+    return [brief, details];
+  }
+
   const tag = (label, style = "") => el("span", label, ("tag " + style).trim());
   function variant(key, allowed, prefix) {
     return allowed.includes(key) ? prefix + key : "";
@@ -161,6 +185,6 @@ const UI = (() => {
     }
   }
 
-  return {byId, list, display, el, button, fold, lines, tag, state, tier, nature, synthetic, company,
+  return {byId, list, display, el, button, fold, lines, ruleSummary, tag, state, tier, nature, synthetic, company,
     stateClass, tierClass, stamp, when, eventUrl, brief, sourceLink, message, api, progress};
 })();

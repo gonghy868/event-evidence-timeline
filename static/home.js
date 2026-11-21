@@ -33,10 +33,10 @@
       examples.hidden = !fictional.length;
       examples.textContent = fictional.length ? UI.display("虚构股票：" + fictional.join("、")) : "";
       const names = group => list(group).map(item => item.name ?? item).join("、");
-      byId("rules").replaceChildren(lines(meta.rules_text), el("h3", "名单内财经媒体"),
+      byId("rules").replaceChildren(...UI.ruleSummary(limits.expire_days, lines(meta.rules_text), el("h3", "名单内财经媒体"),
         el("p", names(meta.media_whitelist)), el("h3", "个人或自媒体平台"), el("p", names(meta.low_platforms)),
         el("p", "名单外来源按“低”处理。过期期限 30 天为产品设定。", "muted"),
-        el("p", `每天上限 ${limits.daily_query_limit} 次`, "muted"));
+        el("p", `每天上限 ${limits.daily_query_limit} 次`, "muted")));
     } catch (error) {
       for (const id of ["quota", "watchlist", "rules"]) message(byId(id), error.message, true);
       byId("synthetic-stocks").hidden = true;
