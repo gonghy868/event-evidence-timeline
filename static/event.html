@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>事件详情 · 事件证据时间线</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=8">
-  <script defer src="common.js?v=8"></script>
-  <script defer src="event.js?v=8"></script>
+  <link rel="stylesheet" href="style.css?v=10">
+  <script defer src="common.js?v=10"></script>
+  <script defer src="event.js?v=10"></script>
 </head>
 <body>
   <header class="masthead compact"><div class="wrap">
@@ -32,7 +32,7 @@
         <p class="muted">引号里的话都在原文里核对过，没通过的会标出。“事实陈述、观点、推测、传闻”是 AI 对这句话的分类；“分量”只看来源是谁，和说了什么无关。部分数据源不带原文链接，可按标题、编号、日期回查。时间栏里的“—”表示来源没给或原文没提。</p>
         <div id="timeline"></div></section>
       <section class="panel" id="sec-compare"><h2>数字与分歧</h2><div id="comparisons"></div>
-        <p class="muted">不同口径的数字不放在一起比；原文没写的留空。分组由 AI 建议，程序核对后排表。</p></section>
+        <p id="metric-note" class="muted" hidden>不同口径的数字不放在一起比；原文没写的留空。分组由 AI 建议，程序核对后排表。</p></section>
       <section class="panel" id="sec-watch"><h2>关联自选股</h2><p id="watch-note" class="muted"></p>
         <p class="muted">只列事实关系，不判断好坏。</p><div id="relations"></div></section>
     </div>

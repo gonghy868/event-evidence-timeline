@@ -47,6 +47,12 @@ class Element {
     const selectors = selector.split(", ");
     return [...this.descendants()].find(node => selectors.some(s => node.matches(s)));
   }
+  closest(selector) {
+    for (let node = this; node; node = node.parent) {
+      if (node.matches(selector)) return node;
+    }
+    return null;
+  }
   xml() {
     const attrs = {...this.attributes};
     if (this.className) attrs.class = this.className;

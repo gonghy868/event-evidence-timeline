@@ -107,9 +107,11 @@ def test_number_comparison_groups_by_api_changed(changed, unchanged):
     assert [visible.index(t) for t in ordered] == sorted(visible.index(t) for t in ordered)
     assert [full.index(t) for t in ordered] == sorted(full.index(t) for t in ordered)
     blocks = dom(area).findall("./details[@class='metric']")
-    assert len(blocks) == changed + unchanged
+    assert [b.findtext("summary/span[@class='metric-name']") for b in blocks[:2]] == [
+        "《时间冲突甲》的发布时间有不同说法", "《时间冲突乙》的发布时间有不同说法"]
+    assert len(blocks) == 2 + changed + unchanged
     assert "数值和单位" not in visible
-    for block, metric in zip(blocks, [*names, *stable]):
+    for block, metric in zip(blocks[2:], [*names, *stable]):
         summary = block.find("summary")
         assert block.get("open") is None
         assert summary.findtext("span[@class='metric-name']") == metric
@@ -424,11 +426,14 @@ def test_reverse_evidence_days_weight_and_missing_date():
         [None, "", "2026-10-20", "2026-10-20", "2026-10-24"])]
     page = render(view)
     assert page["evidence-count"]["visible"] == "5"
-    days = dom(page["timeline"]).findall("section[@class='day']")
-    assert [d.findtext("div[@class='day-date']/strong") for d in days] == ["10-24", "10-20", "日期未提供"]
-    assert [d.findtext("div/small") for d in days] == ["2026", "2026", ""]
+    # 五张都是依据：重点里只放最新的两张，其余三张在“其余证据”里，两处都按日期从新到旧分组
+    tree = dom(page["timeline"])
+    assert [c.get("id") for c in tree.findall("div[@class='evidence-key']//article")] == ["card-4", "card-3"]
+    days = tree.findall(".//section[@class='day']")
+    assert [d.findtext("div[@class='day-date']/strong") for d in days] == ["10-24", "10-20", "10-20", "日期未提供"]
+    assert [d.findtext("div/small") for d in days] == ["2026", "2026", "2026", ""]
     assert [[c.get("id") for c in d.findall("div[@class='day-items']/article")] for d in days] == [
-        ["card-4"], ["card-3", "card-2"], ["card-1", "card-0"]]
+        ["card-4"], ["card-3"], ["card-2"], ["card-1", "card-0"]]
     head = days[0].find(".//div[@class='ev-head']")
     weight = head.find("span[@class='weight tier-high']")
     assert weight.get("aria-label") == "证据分量：" + base["tier_label"] and weight.get("title") == base["tier_reason"]
@@ -520,7 +525,7 @@ def test_evidence_section_explains_links_and_missing_time():
     for filename, script in [("event.html", "event"), ("index.html", "home")]:
         page = (static / filename).read_text(encoding="utf-8")
         for asset in ("style.css", "common.js", script + ".js"):
-            assert f'"{asset}?v=8"' in page
+            assert __import__("re").search(rf'"{__import__("re").escape(asset)}\?v=\d+"', page), asset
 
 
 def test_event_renders_with_missing_arrays():
@@ -737,3 +742,134 @@ def test_excluded_fold_only_when_results_exist():
     timeline = render(view)["timeline"]
     assert "已排除 1 条（和这件事无关）" in timeline["visible"]
     assert "无关公告" not in timeline["visible"] and "无关公告" in timeline["full"]
+
+
+@pytest.mark.parametrize("original,short", [
+    ("已有回应，以{a}为准", "已有回应。"),
+    ("已经更正（{a}），。", "已经更正。"),
+    ("以{a}为准，随后更新（{b}）", "，随后更新。"),
+    ("已有回应（{a}）（{a}）。", "已有回应（{a}）。"),
+    ("已确认（{a} ），以2026-10-20《另一份》为准", "已确认（{a} ），以2026-10-20《另一份》为准"),
+])
+def test_result_sentence_exact_citations_only(original, short):
+    view = views.event_view(event(cards=[card("a"), card("b")]), NOW)
+    refs = []
+    cites = {}
+    for i, item in enumerate(view["cards"]):
+        item.update(source_name="甲乙"[i], publish_date=f"2026-10-2{i}", title=f"文件[{i}]")
+        refs.append(dict(id=item["id"], title=item["title"]))
+        cites[item["id"]] = item["publish_date"] + "《" + item["title"] + "》"
+    sentence = original.format(**cites)
+    view["result"].update(sentence=sentence, basis_cards=refs)
+    view["replay"][-1]["sentence"] = sentence
+    page = render(view)
+    result = dom(page["result"])
+    shown = result.find(".//p[@class='result-sentence']")
+    assert shown.text == short.format(**cites) and shown.get("title") == sentence
+    assert [(n.get("href"), n.text) for n in result.findall(".//div[@class='basis']/a")] == [
+        ("#card-" + item["id"], f"{item['publish_date'][5:10]} {item['source_name']}《{item['title']}》") for item in view["cards"]]
+    assert dom(page["replay"]).findtext(".//p[@class='replay-sentence']") == sentence
+    entry = dict(id="s", title="事件", sentence=sentence)
+    assert dom(render(dict(examples=[entry]), home=True)["examples"]).findtext("a/p") == sentence
+
+
+def test_key_and_more_evidence_counts_days_and_nested_jump():
+    view = views.event_view(event(cards=[card("base")]), NOW)
+    base = view["cards"][0]
+    cards = [dict(base, id=str(i), title=f"材料{i}", publish_date=f"2026-10-2{i // 2}",
+                  source_type_label="公告" if i < 5 else "新闻", direction_note=None, title_check=None,
+                  nature="fact", nature_label="事实陈述", is_basis=i in (4, 6)) for i in range(8)]
+    opinion = dict(nature="opinion", nature_label="观点")
+    guess = dict(nature="speculation", nature_label="推测")
+    rumor = dict(nature="rumor", nature_label="传闻")
+    cards[1].update(classified=False, unclassified_reason="读取失败", also=[guess])
+    cards[2].update(opinion, status="corrected", quote_folded=True, quote="建议投资者买入", also=[rumor, rumor])
+    cards[3].update(guess, direction_note="方向不同", voided=[dict(field="数量", reason="核对失败")])
+    cards[5].update(rumor, also=[opinion])
+    view.update(cards=cards, relations=[dict(stock=dict(name="甲"), kinds=[dict(type="mentioned", card_id="2")])])
+    view["earliest"]["card_id"] = "0"
+    page = render(view)
+    area = page["timeline"]
+    mix, key, more = list(dom(area))[:3]
+    assert page["evidence-count"]["visible"] == "8" and mix.get("class") == "evidence-mix" and mix.text == "共 8 条："
+    assert [(n.get("class"), n.text) for n in mix] == [
+        ("tag src", "公告 5"), ("tag src", "新闻 3"), (None, " 其中 "), ("tag nature-fact", "事实陈述 4"),
+        ("tag nature-opinion", "观点 2"), ("tag nature-speculation", "推测 2"), ("tag nature-rumor", "传闻 3")]
+    assert key.get("class") == "evidence-key" and more.get("class") == "more-evidence" and not more.get("open")
+    def day_cards(group):
+        return [(d.findtext("div/strong"), [n.get("id") for n in d.findall("div/article")]) for d in group.findall("section")]
+    assert day_cards(key) == [("10-23", ["card-7", "card-6"]), ("10-22", ["card-4"]), ("10-20", ["card-0"])]
+    assert day_cards(more) == [("10-22", ["card-5"]), ("10-21", ["card-3", "card-2"]), ("10-20", ["card-1"])]
+    assert [n.text for n in more.find("summary")] == [
+        "展开其余 4 条证据", "其中 2 条有未通过核对或需要留意的地方", "观点 2", "推测 2", "传闻 3"]
+    assert more.findtext("summary/span[@class='tag warning']") in area["visible"]
+    assert "取到的最早一条" in list(key.find(".//article[@id='card-0']/div[@class='ev-head']").itertext())
+    assert "最新一条" in list(key.find(".//article[@id='card-7']/div[@class='ev-head']").itertext())
+    assert "材料2" not in area["visible"] and "方向不同" not in area["visible"] and "方向不同" in area["full"]
+    jumped = render(view, clicks=[["relations", "a"]])["timeline"]
+    outer = dom(jumped).find("details[@class='more-evidence']")
+    target = outer.find(".//article[@id='card-2']")
+    assert outer.get("open") and target.find("details[@class='ev-collapsed']").get("open")
+    assert target.get("scrolled") and target.get("focused") and "flash" in target.get("class").split()
+    assert "建议投资者买入" not in jumped["cardDetails"] and "建议投资者买入" in jumped["full"]
+
+
+@pytest.mark.parametrize("count", [0, 1, 4, 5])
+def test_evidence_threshold_and_overlapping_key_cards(count):
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    base = view["cards"][0]
+    view["cards"] = [dict(base, id=str(i), is_basis=i == count-1, direction_note=None) for i in range(count)]
+    view["earliest"]["card_id"] = str(count-1)
+    page = render(view)
+    root = dom(page["timeline"])
+    assert page["evidence-count"]["visible"] == str(count)
+    assert (root.find("p[@class='evidence-mix']") is not None) == bool(count)
+    assert ("没有取到与这件事相关的证据。" in page["timeline"]["visible"]) == (count == 0)
+    key_ids = [n.get("id") for n in root.findall("div[@class='evidence-key']//article")]
+    assert key_ids == ["card-" + str(i) for i in (reversed(range(count)) if count <= 4 else [count-1])]
+    more = root.find("details[@class='more-evidence']")
+    assert (more is not None) == (count > 4)
+    if more is not None:
+        assert more.find("summary/span[@class='tag warning']") is None
+    assert "最新一条" not in page["timeline"]["full"]
+
+
+@pytest.mark.parametrize("with_numbers", [True, False])
+def test_time_claims_fold_after_opposites_and_metric_note(with_numbers):
+    view = views.event_view(event(cards=[]), NOW)
+    view["comparisons"] = dict(conflicts=[
+        dict(type="time_claims", title="披露", claims=[dict(who="来源甲", value="首日"), dict(who="来源乙", value="次日")], ruling="日期说明"),
+        dict(type="opposite", sides=[dict(label="正方"), dict(label="反方")], ruling="采信说明")],
+        numbers=[dict(name="金额")] if with_numbers else [])
+    view.update(warnings=["align_failed"], warning_labels=["归组失败"])
+    page = render(view)
+    area = page["comparisons"]
+    opposite, timing, warning, *numbers = list(dom(area))
+    assert opposite.get("class") == "comparison" and "正方" in area["visible"] and "反方" in area["visible"]
+    assert timing.tag == "details" and timing.get("class") == "metric" and not timing.get("open")
+    assert timing.findtext("summary/span[@class='metric-name']") == "《披露》的发布时间有不同说法"
+    assert timing.findtext("summary/span[@class='metric-values']") == "2 个来源写法不一"
+    assert [n.text for n in timing.findall("ul/li")] == ["来源甲：首日", "来源乙：次日"]
+    assert timing.findtext("small") == "日期说明" and "日期说明" not in area["visible"] and "首日" not in area["visible"]
+    assert warning.text == "归组失败" and warning.text in area["visible"] and bool(numbers) == with_numbers
+    assert bool(dom(page["metric-note"]).get("hidden")) == (not with_numbers)
+
+
+@pytest.mark.parametrize("count", [3, 5])
+def test_replay_additions_over_three_fold_in_order(count):
+    view = views.event_view(event(cards=[card("a")]), NOW)
+    rows = [dict(title=f"新材料{i}", source_name="甲", tier_label="高") for i in range(count)]
+    step = view["replay"][0]
+    view["replay"] = [dict(step, added=[]), dict(step, added=rows)]
+    page = render(view)["replay"]
+    panel = dom(page).find("div[@class='replay-summary']")
+    expected = [f"新增：《{r['title']}》（甲 · 高）" for r in rows]
+    assert [p.text for p in panel.findall("p[@class='replay-added']")] == expected[:3]
+    extra = panel.find("details")
+    assert (extra is not None) == (count > 3)
+    if extra is not None:
+        assert extra.findtext("summary") == "这一步还加入了 2 条" and not extra.get("open")
+        assert [p.text for p in extra.findall("p[@class='replay-added']")] == expected[3:]
+        assert all(text not in page["visible"] for text in expected[3:])
+    previous = dom(render(view, clicks=[["replay", ".track-step", 0]])["replay"]).find("div[@class='replay-summary']")
+    assert previous.find("details") is None and not previous.findall("p[@class='replay-added']")

@@ -348,3 +348,14 @@ footer.wrap { color: var(--faint); border-top: 1px solid var(--line); padding-bl
 @media (max-width: 600px) {
   .verdict-badges { max-width: none; }
 }
+
+/* 全部证据：构成、重点、其余 */
+.evidence-mix { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 13px; color: var(--sub); }
+.evidence-mix .tag { margin: 0; }
+.more-evidence { margin: 14px 0 0; border: 1px solid var(--line); border-radius: 10px; background: var(--wash); }
+.more-evidence > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: auto; padding: 12px 16px; color: var(--blue-deep); font-weight: 650; font-size: 14px; }
+.more-evidence > summary .tag { margin: 0; font-weight: 600; }
+.more-evidence[open] { background: var(--paper); }
+.more-evidence[open] > summary { border-bottom: 1px solid var(--line); }
+.more-evidence > .day { padding-inline: 16px; }
+.replay-summary details { margin-block: 2px; }

@@ -20,6 +20,8 @@
       const target = byId(targetId);
       if (!target) return;
       event.preventDefault();
+      const more = target.closest("details.more-evidence");
+      if (more) more.open = true;
       const collapsed = target.querySelector("details.ev-collapsed");
       if (collapsed) collapsed.open = true;
       target.scrollIntoView({block: "start"});
@@ -145,11 +147,28 @@
     const basis = el("div", null, "basis");
     basis.append(el("strong", "依据"));
     const basisCards = list(r.basis_cards);
-    for (const card of basisCards) basis.append(jump(card.id, "《" + card.title + "》"));
+    const cardsById = new Map(list(data.cards).map(card => [card.id, card]));
+    let sentence = r.sentence;
+    for (const ref of basisCards) {
+      const card = cardsById.get(ref.id);
+      const source = card ?? ref;
+      const prefix = stamp(monthDay(source.publish_date), source.source_name);
+      basis.append(jump(ref.id, `${prefix}《${source.title}》`));
+      if (card?.publish_date && card.title) {
+        const cite = `${card.publish_date}《${card.title}》`;
+        sentence = sentence.replace(`，以${cite}为准`, "").replace(`（${cite}）`, "").replace(`以${cite}为准`, "");
+      }
+    }
+    if (sentence !== r.sentence) {
+      if (!sentence.endsWith("。")) sentence += "。";
+      sentence = sentence.replaceAll("，。", "。");
+    }
+    const sentenceLine = el("p", sentence, "result-sentence");
+    sentenceLine.title = UI.display(r.sentence);
     if (!basisCards.length) basis.append(el("span", "无"));
-    body.append(el("p", r.sentence, "result-sentence"), basis);
+    body.append(sentenceLine, basis);
     const firstBasis = basisCards[0];
-    const card = firstBasis && list(data.cards).find(item => item.id === firstBasis.id);
+    const card = firstBasis && cardsById.get(firstBasis.id);
     if (card?.quote && !card.quote_folded && card.classified !== false) {
       const quote = el("div", null, "basis-quote");
       quote.append(el("small", `${card.source_name} ${card.publish_date} 原文：`), el("blockquote", card.quote));
@@ -286,7 +305,9 @@
       if (step.order_unknown) badges.append(tag("同一天，先后未明", "warning"));
       panel.replaceChildren(el("small", `第 ${current + 1} / ${steps.length} 步 · ${date}`), badges,
         el("p", step.sentence, "replay-sentence"));
-      for (const card of list(step.added)) panel.append(el("p", `新增：《${card.title}》（${card.source_name} · ${card.tier_label}）`, "replay-added"));
+      const added = list(step.added).map(card => el("p", `新增：《${card.title}》（${card.source_name} · ${card.tier_label}）`, "replay-added"));
+      panel.append(...added.slice(0, 3));
+      if (added.length > 3) panel.append(fold(`这一步还加入了 ${added.length - 3} 条`, ...added.slice(3)));
       panel.append(el("p", step.reason === "none" ? step.reason_label : "原因：" + step.reason_label));
       for (const card of list(step.newly_invalidated)) panel.append(el("p", `《${card.title}》→ ${card.status_label}（因为《${card.by_title}》）`));
       if (next.disabled) stop();
@@ -383,7 +404,9 @@
     return card.quote_folded ? fold("展开原句（第三方观点，非本产品判断）", content) : content;
   }
 
-  function evidenceCard(card, isSynthetic) {
+  const hasCardWarning = article => Boolean(article.querySelector(".warning, .error"));
+
+  function evidenceCard(card, isSynthetic, earliest, latest) {
     const article = el("article", null, "evidence");
     article.id = "card-" + card.id;
     article.tabIndex = -1;
@@ -398,6 +421,8 @@
     if (card.status !== "effective") badges.append(tag(card.status_label, "status"));
     if (card.stage) badges.append(tag("办理阶段：" + card.stage.label));
     if (card.is_basis) badges.append(tag("结论依据", "basis"));
+    if (earliest) badges.append(tag("取到的最早一条"));
+    if (latest && !card.is_basis) badges.append(tag("最新一条"));
     if (isSynthetic || card.synthetic) badges.append(synthetic());
     const title = el("h3");
     const link = sourceLink(card.title, card.url);
@@ -466,7 +491,7 @@
     article.append(details);
     if (inactive) {
       const cause = card.invalidated_by_title ? el("small", "因为《" + card.invalidated_by_title + "》") : null;
-      if (article.querySelector(".warning, .error")) {
+      if (hasCardWarning(article)) {
         if (cause) badges.append(cause);
       } else {
         const collapsed = fold(null);
@@ -490,13 +515,41 @@
     return article;
   }
 
-  function timeline(data) {
-    const area = byId("timeline");
-    const cards = list(data.cards);
-    byId("evidence-count").textContent = String(cards.length);
-    area.replaceChildren();
+  function natureTotals(cards) {
+    const totals = new Map();
+    function count(item) {
+      if (!item.nature_label) return;
+      const total = totals.get(item.nature) ?? {label: item.nature_label, count: 0};
+      total.count++;
+      totals.set(item.nature, total);
+    }
+    for (const card of cards) {
+      if (card.classified !== false) count(card);
+      list(card.also).forEach(count);
+    }
+    const tags = [];
+    for (const key of ["fact", "opinion", "speculation", "rumor"]) {
+      const total = totals.get(key);
+      if (total) tags.push(nature({nature: key, nature_label: `${total.label} ${total.count}`}));
+    }
+    return tags;
+  }
+
+  function evidenceMix(cards) {
+    const mix = el("p", `共 ${cards.length} 条：`, "evidence-mix");
+    const sources = new Map();
+    for (const card of cards) sources.set(card.source_type_label, (sources.get(card.source_type_label) || 0) + 1);
+    for (const [label, count] of [...sources].sort((a, b) => b[1] - a[1])) {
+      mix.append(tag(`${label} ${count}`, "src"));
+    }
+    mix.append(el("span", " 其中 "), ...natureTotals(cards));
+    return mix;
+  }
+
+  function appendDays(parent, cards, data, latest) {
     const days = new Map();
-    for (const card of [...cards].reverse()) {
+    let warnings = 0;
+    for (const card of cards) {
       const date = card.publish_date || "";
       if (!days.has(date)) {
         const day = el("section", null, "day");
@@ -504,12 +557,48 @@
         heading.append(el("strong", monthDay(date) || "日期未提供"), el("small", date.slice(0, 4)));
         const items = el("div", null, "day-items");
         day.append(heading, items);
-        area.append(day);
+        parent.append(day);
         days.set(date, items);
       }
-      days.get(date).append(evidenceCard(card, data.event.is_synthetic));
+      const article = evidenceCard(card, data.event.is_synthetic, card.id === data.earliest?.card_id, card === latest);
+      if (hasCardWarning(article)) warnings++;
+      days.get(date).append(article);
     }
-    if (!cards.length) area.append(el("p", "没有取到与这件事相关的证据。", "empty warning"));
+    return warnings;
+  }
+
+  function timeline(data) {
+    const area = byId("timeline");
+    const cards = list(data.cards);
+    byId("evidence-count").textContent = String(cards.length);
+    area.replaceChildren();
+    if (cards.length) {
+      const newestFirst = [...cards].reverse();
+      const latest = newestFirst[0];
+      const keyCards = [];
+      const rest = [];
+      // 依据可能有很多张（例如“待证实”时每篇报道都是依据），重点里只放最新的两张，其余在下面展开。
+      let basisShown = 0;
+      for (const card of newestFirst) {
+        const basisKey = card.is_basis && basisShown < 2;
+        if (basisKey) basisShown++;
+        const key = cards.length <= 4 || basisKey || card.id === data.earliest?.card_id || card === latest;
+        (key ? keyCards : rest).push(card);
+      }
+      const keyGroup = el("div", null, "evidence-key");
+      appendDays(keyGroup, keyCards, data, latest);
+      area.append(evidenceMix(cards), keyGroup);
+      if (rest.length) {
+        const more = fold(null);
+        more.className = "more-evidence";
+        const warnings = appendDays(more, rest, data, latest);
+        const summary = more.firstChild;
+        summary.append(el("span", `展开其余 ${rest.length} 条证据`));
+        if (warnings) summary.append(tag(`其中 ${warnings} 条有未通过核对或需要留意的地方`, "warning"));
+        summary.append(...natureTotals(rest));
+        area.append(more);
+      }
+    } else area.append(el("p", "没有取到与这件事相关的证据。", "empty warning"));
     const relayed = list(data.relayed_claims);
     if (relayed.length) {
       area.append(el("h3", "被转述的说法"), el("p", "这些说法是在公告或报道里被别人转述的，原帖没有取到，所以不排进上面的时间线。", "muted"));
@@ -541,30 +630,37 @@
     const cards = new Map(list(data.cards).map(card => [card.id, card]));
     const conflicts = list(data.comparisons?.conflicts);
     const numbers = list(data.comparisons?.numbers);
+    byId("metric-note").hidden = numbers.length === 0;
     area.replaceChildren();
     const warned = list(data.warnings).length > 0;
+    const timeClaims = [];
     for (const conflict of conflicts) {
-      const block = el("div", null, "comparison");
       if (conflict.type === "time_claims") {
-        block.append(el("h3", `《${conflict.title}》的发布时间有不同说法：`),
-          lines(list(conflict.claims).map(c => c.who + "：" + c.value)), el("small", conflict.ruling));
-      } else {
-        const sides = el("div", null, "side-grid");
-        for (const side of list(conflict.sides)) {
-          const column = el("div", null, "side");
-          column.append(el("h3", side.label));
-          for (const item of list(side.cards)) {
-            const card = cards.get(item.card_id);
-            column.append(el("small", item.source_name + " · " + item.publish_date),
-              jump(item.card_id, item.title), el("blockquote", item.quote),
-              tier(item.tier, item.tier_label ?? card?.tier_label));
-          }
-          sides.append(column);
-        }
-        block.append(sides, el("p", "目前以谁为准：" + conflict.ruling), el("small", conflict.rule));
+        const claims = list(conflict.claims);
+        const block = fold(null, lines(claims.map(c => c.who + "：" + c.value)), el("small", conflict.ruling));
+        block.className = "metric";
+        block.firstChild.append(el("span", `《${conflict.title}》的发布时间有不同说法`, "metric-name"),
+          el("span", `${claims.length} 个来源写法不一`, "metric-values"));
+        timeClaims.push(block);
+        continue;
       }
+      const block = el("div", null, "comparison");
+      const sides = el("div", null, "side-grid");
+      for (const side of list(conflict.sides)) {
+        const column = el("div", null, "side");
+        column.append(el("h3", side.label));
+        for (const item of list(side.cards)) {
+          const card = cards.get(item.card_id);
+          column.append(el("small", item.source_name + " · " + item.publish_date),
+            jump(item.card_id, item.title), el("blockquote", item.quote),
+            tier(item.tier, item.tier_label ?? card?.tier_label));
+        }
+        sides.append(column);
+      }
+      block.append(sides, el("p", "目前以谁为准：" + conflict.ruling), el("small", conflict.rule));
       area.append(block);
     }
+    area.append(...timeClaims);
     if (warned) {
       for (const label of list(data.warning_labels)) area.append(el("p", label, "message warning"));
     }

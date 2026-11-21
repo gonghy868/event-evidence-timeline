@@ -173,7 +173,10 @@ class DeepSeekLLM:
         api_key = config.env("DEEPSEEK_API_KEY")
         if not api_key:
             raise LLMError("没有配置 DEEPSEEK_API_KEY")
+        # deepseek-flash 默认会先“深度思考”再作答：更慢，而且思考占用输出额度，长文档的结果会被截断成无效 JSON。
+        # 这里只要它照原文填表，关掉思考（实测单次由 2.6 秒降到 1.0 秒，输出格式不变）。
         body = {"model": config.DEEPSEEK_MODEL, "temperature": 0, "max_tokens": max_tokens,
+                "thinking": {"type": "disabled"},
                 "response_format": {"type": "json_object"},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         last = None
